@@ -27,12 +27,26 @@ UFS_WINDOW = (0x01D80000, 0x00028000)   # ufsphy_mem@1d80000 .. 0x1da8000 (ufshc
 PLATFORM = Path('Platforms/Xiaomi/dadaPkg')
 
 
+def is_uefi(path):
+    return (Path(path) / PLATFORM / 'dada.dsc').is_file()
+
+
 def find_uefi(given):
+    """The driver runs this from the build tree without exporting --uefi, so probe in name order and
+    then look next to the device repository (the Mu-Silicium checkout is stored beside it)."""
     candidates = [given, os.environ.get('UNIXNU_UEFI'), 'uefi-dada', '../uefi-dada',
                   'Mu-Silicium', '../Mu-Silicium', '../../Mu-Silicium']
     for candidate in candidates:
-        if candidate and (Path(candidate) / PLATFORM / 'dada.dsc').is_file():
+        if candidate and is_uefi(candidate):
             return Path(candidate).resolve()
+    device = find_device()
+    if device:
+        siblings = sorted(path for path in device.parent.iterdir() if path.is_dir() and is_uefi(path))
+        preferred = [path for path in siblings if path.name in ('Mu-Silicium', 'uefi-dada', 'uefi-' + device.name)]
+        for path in preferred or siblings:
+            return path.resolve()
+        if siblings:
+            raise SystemExit(f'preflight: several UEFI checkouts next to {device}; pass --uefi DIR')
     raise SystemExit('preflight: cannot find the Mu-Silicium dada checkout; pass --uefi DIR or set UNIXNU_UEFI')
 
 

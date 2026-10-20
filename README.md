@@ -84,6 +84,23 @@ appended dada device tree (966,281 bytes), 2,195,456 bytes total
 The v4 support is a candidate for upstream UniXNU (`scripts/unixnu/bootimg.py`); the shim change
 belongs to the UEFI port, as uefi-sheng carries it too.
 
+### Verified on this machine
+
+Linux host, Mu-Silicium at `~/Src/Repo/Mu-Silicium`, `mu_basecore` at `cfb93724a0`, RELEASE.
+
+| Step | Result |
+| --- | --- |
+| `unixnu build firmware` | 47 s; `SILICIUM_UEFI.fd` exactly `0x300000` bytes, sha256 `31692ac18c695f6e…` |
+| Mu_Basecore patch series | all five applied and reverted around the build; tree left clean |
+| preflight | 40 memory descriptors, 58 vendor inputs, 0 errors, 3 known device TODOs |
+| `unixnu bootimg` | Android v4, 2,195,456 bytes, sha256 `8b796bc356218881…` |
+| payload layout | 112-byte shim + `0x300000` firmware volume, gzip 3,145,840 bytes, 966,281-byte DTB appended |
+| `fastboot boot` | not run; nothing has been flashed yet |
+
+The preflight finds the UEFI checkout from `--uefi`, `$UNIXNU_UEFI`, a usual name in the working
+directory, or a sibling of the device repository, because the driver does not export `--uefi` to
+preflight scripts.
+
 
 ### Just the firmware, without UniXNU
 

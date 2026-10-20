@@ -1,0 +1,17 @@
+# Sources of this device repository. The base UniXNU feeds.toml already supplies xnu, libplatform,
+# libdispatch, AvailabilityVersions and edk2. Add a device driver or kit here when it lives in its own
+# repository, or point a base source at a local checkout while working offline.
+#
+# [[source]]
+# name = "NativeUfs"
+# kind = "driver"
+# git = "https://github.com/UniXNU/NativeUfs.git"
+# ref = "main"
+# path = "drivers/NativeUfs"
+#
+# [[source]]
+# name = "edk2"
+# kind = "refer"
+# git = "https://github.com/microsoft/mu_basecore.git"
+# ref = "release/202608"
+# local = "~/Src/Repo/edk2"

@@ -1,0 +1,35 @@
+# Kernel configuration of the dada image. CONFIG_XNU_<NAME> becomes XNU_<NAME> for the kernel build.
+#
+# The first-boot goal is the video console and the genuine missing-driver panic, so this list starts
+# from the sheng reference and drops every module that is board specific to SM8550 or not yet written
+# for SM8750 (Adreno 830, ShenG PMGR, the owner/root paths).
+
+CONFIG_XNU_SOURCE_CORECRYPTO14=y
+CONFIG_XNU_SOURCE_PTHREAD=y
+CONFIG_XNU_ARM_DT_PLATFORM=y
+CONFIG_XNU_ARMCPU=y
+CONFIG_XNU_NATIVE_UFS=y
+CONFIG_XNU_NATIVE_AES=y
+CONFIG_XNU_TRUST_CACHE_RUNTIME=y
+CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
+CONFIG_XNU_NATIVE_ARCH_TIMER=y
+CONFIG_XNU_NATIVE_PAN=y
+CONFIG_XNU_BOOT_PROGRESS=y
+CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
+
+CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
+
+# Explicitly off for the first boot:
+#   XNU_NATIVE_ADRENO          there is no Adreno 830 driver; the GPU is a later project
+#   XNU_SHENG_PMGR             the sheng PMGR integration is SM8550 board code
+#   XNU_NATIVE_MOBILE_DISPLAY  needs the Adreno path
+#   XNU_ARMVIRT_PLATFORM       this is not the QEMU virt platform
+#   XNU_SOURCE_MOCKFS          test fixture, not wanted in a device kernel
+CONFIG_XNU_NATIVE_ADRENO=n
+CONFIG_XNU_SHENG_PMGR=n
+CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n
+CONFIG_XNU_ARMVIRT_PLATFORM=n
+CONFIG_XNU_SOURCE_MOCKFS=n
+
+# TODO(device): set the scratch Data volume UUID when the userdata image exists.
+# CONFIG_XNU_OWNER_DATA_VOLUME_UUID="00000000-0000-0000-0000-000000000000"

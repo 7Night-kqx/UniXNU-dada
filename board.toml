@@ -1,0 +1,184 @@
+# Board description of the Xiaomi 15 (dada, Qualcomm SM8750 "sun"), read by the unixnu build driver.
+#
+# Every value below is either taken from the Mu-Silicium dada port (Resources/Configs/dada.toml,
+# Platforms/Xiaomi/dadaPkg, the stock device tree in Resources/DTBs/dada.dtb) or marked TODO.
+# A TODO value is a first-boot placeholder: the stages that depend on it are listed in
+# docs/known-values.md and are refused or warned about by scripts/check-dada.py.
+
+[board]
+name = "dada"
+soc = "SM8750"
+description = "Xiaomi 15"
+kit = "dada"                       # the package/ of this repository appears as kits/dada in the build tree
+
+# The target OS image: the unchanged iPad7,1 iPadOS 17.7.11 restore image that the UniXNU kernel build
+# and prelink are pinned to (the same image as the sheng reference port). Give --ipsw PATH to use a local
+# file; without it the remote url is read with range requests, only the members that are needed.
+[ipsw]
+url = "https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw"
+product = "iPad7,1"
+version = "17.7.11"
+build = "21H461"
+device_class = "j120ap"
+chip_id = 0x8011
+board_id = 12
+fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]
+
+# Member pins of that restore image.
+[ipsw.sha256]
+"044-76040-038.dmg" = "3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d"
+"044-76034-038.dmg" = "b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f"
+
+# The raw image for the userdata partition: the OS and SystemOS disk images of the IPSW behind a manifest.
+# TODO(device): first_lba and last_lba are the GPT entry "userdata" of LUN 0 as it exists on the phone.
+#   Read them on the device (sgdisk -p /dev/block/sda, or print the GPT from UEFI) and fill both in.
+#   Until then "unixnu build userdata" would size the image from a zero-length window; the storage and
+#   root stages need the real values.
+[userdata]
+first_lba = 0x0
+last_lba = 0x0
+lba_bytes = 4096
+windows = [
+  { name = "OS", component = "OS" },
+  { name = "SystemOS", component = "Cryptex1,SystemOS" },
+]
+
+[kernel]
+defconfig = "dada_defconfig"
+
+[kernel.prelink]
+tool = "kits/NativePrelink/emit_prelink.py"
+kernel = "build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf"
+kernelcache_sha256 = "f18b4df865405f2a287b84977d7aca745e056d656d9fc9df1662970ce2969de7"
+slide = "-0x1000000"
+early_security_init = "com.apple.driver.AppleMobileFileIntegrity=0xfffffff005ab4ae0"
+roots = [
+  "com.apple.AppleFSCompression.AppleFSCompressionTypeZlib",
+  "com.apple.driver.AppleARMPlatform",
+  "com.apple.driver.AppleARMWatchdogTimer",
+  "com.apple.driver.AppleAudioClockLibs",
+  "com.apple.driver.AppleEffaceableStorage",
+  "com.apple.driver.AppleIISController",
+  "com.apple.driver.AppleM2ScalerCSCDriver",
+  "com.apple.driver.AppleMobileFileIntegrity",
+  "com.apple.driver.ApplePMGR",
+  "com.apple.driver.IODARTFamily",
+  "com.apple.filesystems.apfs",
+  "com.apple.iokit.CoreAnalyticsFamily",
+  "com.apple.iokit.IOAVFamily",
+  "com.apple.iokit.IOAudio2Family",
+  "com.apple.iokit.IOCECFamily",
+  "com.apple.iokit.IOCryptoAcceleratorFamily",
+  "com.apple.iokit.IOGPUFamily",
+  "com.apple.iokit.IOHDCPFamily",
+  "com.apple.iokit.IOMobileGraphicsFamily",
+  "com.apple.iokit.IOReportFamily",
+  "com.apple.iokit.IOSlowAdaptiveClockingFamily",
+  "com.apple.iokit.IOStorageFamily",
+  "com.apple.iokit.IOSurface",
+  "com.apple.kec.Libm",
+  "com.apple.kec.corecrypto",
+  "com.apple.kext.AppleMatch",
+  "com.apple.kext.CoreTrust",
+  "com.apple.security.AppleImage4",
+  "com.apple.security.sandbox",
+  "com.apple.iokit.IOHIDFamily",
+  "com.apple.iokit.IOHIDEventDriver",
+]
+
+[firmware]
+config = "dada"                    # Resources/Configs/dada.toml in the Mu-Silicium checkout (--uefi)
+dsc = "Platforms/Xiaomi/dadaPkg/dada.dsc"
+fd = "Build/dadaPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+preflight = ["scripts/check-dada.py"]
+# The vendor binaries (Binaries/Device-Binaries, branch dada) and the trees the DSC needs.
+submodules = [
+  "Binaries",
+  "Common/Mu",
+  "Common/Mu_OEM_Sample",
+  "Silicon/Silicium/OpensslPkg/Library/OpensslLib/openssl",
+]
+# The Mu_Basecore patch series that Mu-Silicium's own build_uefi.py applies to every platform.
+# UniXNU applies and reverts them around the EDK II build.
+patches = [
+  "Resources/MuPatches/AsmMacroLib.patch",
+  "Resources/MuPatches/Auth-Service.patch",
+  "Resources/MuPatches/Boot-Manager.patch",
+  "Resources/MuPatches/Timer.patch",
+  "Resources/MuPatches/Usb-Bus.patch",
+]
+packages = [
+  "{uefi}",
+  "{uefi}/Platforms/Xiaomi",
+  "{tree}/package",
+  "{tree}/drivers/DarwinBoot",
+  "{edk2}",
+  "{uefi}/Common/Mu",
+  "{uefi}/Common/Mu_OEM_Sample",
+  "{uefi}/Silicon/Qualcomm",
+  "{uefi}/Silicon/Silicium",
+]
+
+[firmware.defines]
+# Mu-Silicium builds dada without secure boot unless -s is given (build_uefi.py default).
+ENABLE_SECUREBOOT = "0"
+DEVICE_MODEL = "0"
+MEMORY_PROTECTION = "TRUE"
+SHIP_MODE = "FALSE"
+BUILDID_STRING = "dada-research"
+
+# The ramdisk of the boot image: a FAT volume with the UniXNU config, the kernel, its device tree and
+# the optional trust cache and Data seed. The loader (DarwinBoot) is part of the firmware volume.
+[payload]
+volume = "DADAESP"
+size_mib = 192
+loader = "firmware"
+title = "dada first boot: source 4K XNU to console"
+# TODO(device): read the SMEM RAM table on the phone. The stock device tree reports DDR regions at
+#   0x80000000 and above 0x880000000, so 2 GiB from 0x80000000 is the conservative first-boot value.
+dram_size = "0x80000000"
+panic_screen = true                # patch panic() screen output into the payload copy of the kernel
+# TODO(device): the accepted trust caches are device inputs. Fill this list with the hashes of the
+#   bundles this board accepts once trust caches have been extracted from the device firmware.
+trust_cache_sha256 = []
+kernel_args = [
+  "-v",
+  "serial=3",
+  "debug=0x14e",
+  "boot-progress=2",
+  "armcpu-diagnostics=1",
+  "-no_slto_panic",
+  "ml-timeout-lock-panic-scale=40",
+]
+
+[payload.adt]
+tool = "scripts/make-dada-adt.py"
+# A software identity seed for IOPlatformUUID, not an Apple chip id. Distinct from the sheng port so
+# the two boards do not produce the same identity; any nonzero 32-bit value works.
+chip_id = "208"
+# TODO(device): the DarwinBoot contiguous window request. 1 GiB is enough for the console and kernel
+#   stages; the Data ramdisk stage needs a larger window, measured on the phone.
+owned_memory_size = "0x40000000"
+# TODO(device): the UUID of the root volume, once the userdata image exists on the phone.
+root_match_volume_uuid = "00000000-0000-0000-0000-000000000000"
+# Stock device tree /cpus reg values: six cores at 0x000..0x500, two at 0x10000 and 0x10100.
+cpu_regs = "0,0x100,0x200,0x300,0x400,0x500,0x10000,0x10100"
+psci_method = "smc"
+packed_data_ramdisk = true
+# The same research identity as the sheng port, because both target the same iPad7,1 restore image.
+# This is an image identity, not a claim about the phone hardware.
+ipad_identity = true
+unique_chip_id = "required"        # the platform seed is not stored in any repository
+
+# Image parameters come from the Mu-Silicium device config (header_version 4 for dada);
+# [bootimg.image] would override them.
+
+# TODO(device): the stock ABL may power the panel off when the device tree has no splash region, as it
+# does on sheng. dada boots to the UEFI menu without one today; add the node with the measured address
+# and size when XNU has to take over the panel.
+# [[bootimg.dtb_node]]
+# path = "/reserved-memory/splash_region"
+# props = [
+#   { name = "label", type = "s", value = "cont_splash_region" },
+#   { name = "reg", type = "x", value = ["0x0", "0x00000000", "0x0", "0x00000000"] },
+# ]

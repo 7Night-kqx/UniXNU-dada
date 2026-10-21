@@ -11,6 +11,11 @@ Hard errors (the build stops):
   - a Binaries/dada path named by Include/*.inc is missing
   - the board DT that the boot image needs is missing
   - this repository's [firmware] config/dsc points somewhere else
+  - scripts/tests/check-kernel-archives.py fails: the defconfig, the [kernel] archives and the archive
+    builders disagree, or NativeUfs would be built with verified block mode and no policy bundle
+
+The kernel step needs macOS, so the last check keeps the parts that can be verified anywhere coupled: it
+runs the real builder against a synthetic compile record, so it needs no Xcode.
 
 Warnings (printed, build continues) are measurements that belong to a later stage: the userdata
 window, the root volume UUID, the trust cache pins and the UFS MMIO window.
@@ -20,6 +25,8 @@ import argparse
 import json
 import os
 import re
+import subprocess
+import sys
 import tomllib
 
 DESCRIPTOR = re.compile(r'\{"([^"]+)"\s*,\s*(0x[0-9a-fA-F]+),\s*(0x[0-9a-fA-F]+),([^}]+)\}')
@@ -134,6 +141,11 @@ def main():
         else:
             errors.append('no dada device tree: Resources/DTBs/dada.dtb and Platforms/Xiaomi/dadaPkg/FdtBlob/*.dtb are both missing')
 
+    # NativeUfs hardcodes the controller's compatible names and the SM8750 GCC offsets. Check both
+    # against the tree the kernel will actually boot from: a device tree that renames the controller
+    # or a header that keeps the SM8550 offsets makes the driver silently not attach.
+    # Runs after `device` is resolved below, because the checker lives in the device repository.
+
     ufs_covered = False
     start, length = UFS_WINDOW
     for name, base, size, _ in rows:
@@ -167,6 +179,41 @@ def main():
             warnings.append('board.toml: [payload] trust_cache_sha256 is empty; --trust-cache will accept any bundle')
         if not board.get('ipsw', {}).get('product'):
             warnings.append('board.toml: [ipsw] is incomplete')
+
+        ufs_facts = device / 'drivers/NativeUfs/tests/check_sm8750_facts.py'
+        if dtb.is_file() and ufs_facts.is_file():
+            result = subprocess.run([sys.executable, str(ufs_facts), '--dtb', str(dtb)],
+                                    capture_output=True, text=True)
+            lines = (result.stdout or result.stderr).strip().splitlines()
+            if result.returncode:
+                detail = next((line for line in lines if line.startswith('FAIL')), 'no detail')
+                errors.append(f'NativeUfs SM8750 facts: {detail}')
+            else:
+                checks = [line for line in lines if line.startswith('PASS')]
+                print(f'preflight: NativeUfs: {len(checks)} fact checks against {dtb.name}')
+        elif dtb.is_file():
+            warnings.append('drivers/NativeUfs/tests/check_sm8750_facts.py is missing; '
+                            'the UFS compatible and GCC offsets are unchecked')
+
+        # The kernel step needs macOS, so check here that its config, builders and products agree. In the
+        # build tree the device repository is a symlink direction away, so pass both paths explicitly.
+        kernel_check = device / 'scripts/tests/check-kernel-archives.py'
+        if kernel_check.is_file():
+            # cwd is the assembled tree during the firmware preflight, so the kernel script path check runs
+            # too; from elsewhere only the config and builder checks run.
+            result = subprocess.run([sys.executable, str(kernel_check), '--device', str(device)],
+                                    capture_output=True, text=True)
+            lines = (result.stdout or result.stderr).strip().splitlines()
+            if result.returncode:
+                for line in lines:
+                    if line.startswith('FAIL'):
+                        errors.append(f'kernel archives: {line[5:]}')
+            else:
+                checks = [line for line in lines if line.startswith('PASS')]
+                print(f'preflight: kernel archives: {len(checks)} checks')
+        else:
+            warnings.append('scripts/tests/check-kernel-archives.py is missing; '
+                            'the kernel archives are unchecked')
 
     report = {
         'uefi': str(uefi),

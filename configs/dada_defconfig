@@ -14,8 +14,11 @@ CONFIG_XNU_TRUST_CACHE_RUNTIME=y
 CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
 CONFIG_XNU_NATIVE_ARCH_TIMER=y
 CONFIG_XNU_NATIVE_PAN=y
-CONFIG_XNU_BOOT_PROGRESS=y
-CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
+# Boot progress is off for the first boot. scripts/build-xnu-4k-baseline.sh refuses it unless the
+# audited UFS/owner-root, Virtio block and source-corecrypto build are all selected together; those
+# are the owner-root path this port does not have yet. The kernel prints through the video console and
+# the serial console without it. Turn it back on (with the whole audited set) once that path exists.
+CONFIG_XNU_BOOT_PROGRESS=n
 
 CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
 
@@ -25,11 +28,18 @@ CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
 #   XNU_NATIVE_MOBILE_DISPLAY  needs the Adreno path
 #   XNU_ARMVIRT_PLATFORM       this is not the QEMU virt platform
 #   XNU_SOURCE_MOCKFS          test fixture, not wanted in a device kernel
+#   XNU_NATIVE_LEGACY_DISPLAY  its builder is an instrument for the original IOMobileFramebufferLegacy
+#                              lifecycle and compiles kits/sheng board code (touch, keystore, GPU power,
+#                              Novatek, cpufreq). A text console does not need it: DarwinBoot fills
+#                              boot_args.Video[6] from the UEFI GOP and XNU's pexpert video console draws
+#                              through that. Turn it on again with a trimmed, board-neutral builder when a
+#                              framebuffer service (not a text console) is wanted.
 CONFIG_XNU_NATIVE_ADRENO=n
 CONFIG_XNU_SHENG_PMGR=n
 CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n
 CONFIG_XNU_ARMVIRT_PLATFORM=n
 CONFIG_XNU_SOURCE_MOCKFS=n
+CONFIG_XNU_NATIVE_LEGACY_DISPLAY=n
 
 # TODO(device): set the scratch Data volume UUID when the userdata image exists.
 # CONFIG_XNU_OWNER_DATA_VOLUME_UUID="00000000-0000-0000-0000-000000000000"

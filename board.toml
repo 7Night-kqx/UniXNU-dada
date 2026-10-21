@@ -30,13 +30,11 @@ fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustC
 "044-76034-038.dmg" = "b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f"
 
 # The raw image for the userdata partition: the OS and SystemOS disk images of the IPSW behind a manifest.
-# TODO(device): first_lba and last_lba are the GPT entry "userdata" of LUN 0 as it exists on the phone.
-#   Read them on the device (sgdisk -p /dev/block/sda, or print the GPT from UEFI) and fill both in.
-#   Until then "unixnu build userdata" would size the image from a zero-length window; the storage and
-#   root stages need the real values.
+# first_lba/last_lba are the GPT entry "userdata" of LUN 0 as measured on the phone
+# (sgdisk --print /dev/block/sda; logical block 4096, partition 34, 372.53 GiB).
 [userdata]
-first_lba = 0x0
-last_lba = 0x0
+first_lba = 3124736                # 0x2FAE00
+last_lba = 100781311               # 0x601CCFF
 lba_bytes = 4096
 windows = [
   { name = "OS", component = "OS" },
@@ -45,6 +43,36 @@ windows = [
 
 [kernel]
 defconfig = "dada_defconfig"
+# Archive builders of the kernel step, in order. Each entry is a script of the build tree with its
+# arguments; scripts/build-xnu-4k-baseline.sh then links the archives with -Wl,-force_load and fails if
+# one is missing. Only the builders the defconfig selects are listed.
+#
+# Not listed, and why:
+#   build-arm-driver.py NativeVirtioBlock / NativeRamBlock
+#   build-native-virtio-bindings.py ...      CONFIG_XNU_NATIVE_VIRTIO_BLOCK is off (no virtio on this board)
+#   build-mockfs-fixture.py                  CONFIG_XNU_SOURCE_MOCKFS is off (test fixture)
+#   build-sheng-platform-power.py            CONFIG_XNU_SHENG_PMGR is off (SM8550 board code)
+#   build-boot-progress.py                   CONFIG_XNU_BOOT_PROGRESS is off (needs the audited owner-root set)
+#   build-arm-driver.py NativeAdreno          no Adreno 830 driver exists
+#   build-native-adreno-kits.py, build-native-adreno-accelerator.py   same
+#   build-native-legacy-display.py           CONFIG_XNU_NATIVE_LEGACY_DISPLAY is off; see below
+#
+# The console does not need the legacy display instrument: DarwinBoot fills boot_args.Video[6] from the
+# UEFI GOP (drivers/DarwinBoot BootVideo.h, base/display/rowBytes/width/height/depth) and XNU's own
+# pexpert video console draws through it. That builder is an instrument for the original
+# IOMobileFramebufferLegacy lifecycle and it compiles kits/sheng sources (touch, keystore, GPU power,
+# Novatek, cpufreq) that are SM8550 board code. Add it back with a trimmed, board-neutral copy when a
+# framebuffer service (not a text console) is wanted.
+archives = [
+  "build-corecrypto-14.py",
+  "build-corecrypto-14.py --namespace",
+  "build-arm-driver.py ArmDTPlatform",
+  "build-arm-driver.py ArmCpu",
+  "build-arm-driver.py NativeAES",
+  "build-native-aes-bindings.py",
+  "build-arm-driver.py NativeUfs",
+  "build-libpthread-kernel.py",
+]
 
 [kernel.prelink]
 tool = "kits/NativePrelink/emit_prelink.py"
@@ -134,8 +162,12 @@ volume = "DADAESP"
 size_mib = 192
 loader = "firmware"
 title = "dada first boot: source 4K XNU to console"
-# TODO(device): read the SMEM RAM table on the phone. The stock device tree reports DDR regions at
-#   0x80000000 and above 0x880000000, so 2 GiB from 0x80000000 is the conservative first-boot value.
+# DRAM as reported to XNU (one contiguous dram-base/dram-size pair in the ADT; DRAM_BASE in
+# scripts/make-dada-adt.py is 0x80000000). Measured from the stock device tree memory node (dada.dtb):
+# 15.12 GiB of usable DRAM in 16 regions -- 8 GiB at 0xa00000000, 5 GiB at 0x8c0000000, and ~1.3 GiB
+# scattered below 0xd8000000 with the gunyah hypervisor owning 0x80000000..0x81200000. The ADT cannot
+# express that fragmentation, so 2 GiB from 0x80000000 stays the conservative first-boot value, the
+# same as sheng. Raise it once XNU is observed running on the phone.
 dram_size = "0x80000000"
 panic_screen = true                # patch panic() screen output into the payload copy of the kernel
 # TODO(device): the accepted trust caches are device inputs. Fill this list with the hashes of the
@@ -173,12 +205,14 @@ unique_chip_id = "required"        # the platform seed is not stored in any repo
 # Image parameters come from the Mu-Silicium device config (header_version 4 for dada);
 # [bootimg.image] would override them.
 
-# TODO(device): the stock ABL may power the panel off when the device tree has no splash region, as it
-# does on sheng. dada boots to the UEFI menu without one today; add the node with the measured address
-# and size when XNU has to take over the panel.
-# [[bootimg.dtb_node]]
-# path = "/reserved-memory/splash_region"
-# props = [
-#   { name = "label", type = "s", value = "cont_splash_region" },
-#   { name = "reg", type = "x", value = ["0x0", "0x00000000", "0x0", "0x00000000"] },
-# ]
+# The panel handover region. The stock device tree in Resources/DTBs/dada.dtb already carries
+# /reserved-memory/splash_region with label "cont_splash_region" and reg 0xfc800000 + 0x2b00000, which is
+# the exact form Qualcomm's ABL looks up by literal path; it hands a live framebuffer to the next stage
+# instead of tearing the display down. So no [[bootimg.dtb_node]] override is needed or wanted here:
+# fdtput -c fails with FDT_ERR_EXISTS on a node that is already present, and unixnu bootimg treats that
+# as a build error. Re-add the override only if a future device tree loses the node.
+#
+# Framebuffer as measured on the phone through the UEFI GOP (dada_kernel/docs/uefi-fix.md):
+#   1200x2670, stride 4800 (0x12c0), format a8r8g8b8, base 0xfc800000, size 0xC38E80.
+# The XNU side does not consume these yet; they are here so the display probe can start from measured
+# values instead of guessing.

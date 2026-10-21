@@ -65,9 +65,18 @@ while index < len(arguments):
     elif not value.startswith('-W'):
         command.append(value)
     index += 1
-command.extend(['-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
-                '-Wno-c99-designator', '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion',
-                '-Wno-unnecessary-virtual-specifier', '-I', str(ROOT / '.cache/xnu-work/osfmk')])
+# The warning options below silence the warnings the driver sources are known to produce, and -Werror makes
+# every other diagnostic fatal, which is the point of this build. Which options exist, however, depends on
+# the compiler, and the compiler is the one the compile record names -- a bare `clang`, resolved through
+# PATH. CI puts Homebrew LLVM (upstream clang) first, a maintainer's Mac resolves the same record to Apple
+# clang. -Wno-unnecessary-virtual-specifier is an Apple-only option: an upstream clang reports it as an
+# unknown warning option, and under -Werror that report is itself a build failure.
+# -Wno-unknown-warning-option covers exactly that gap and nothing else: it turns "this compiler has no such
+# warning option" into silence, while every real warning the sources produce stays fatal.
+command.extend(['-Wall', '-Wextra', '-Werror', '-Wno-unknown-warning-option',
+                '-Wno-unused-parameter', '-Wno-c99-designator', '-Wno-reorder-init-list',
+                '-Wno-deprecated-enum-enum-conversion', '-Wno-unnecessary-virtual-specifier',
+                '-I', str(ROOT / '.cache/xnu-work/osfmk')])
 if component in ('NativeVirtioBlock', 'NativeRamBlock', 'NativeUfs'):
     command += ['-I', str(ROOT / 'build/storage-abi/include')]
     if args.verified_root:

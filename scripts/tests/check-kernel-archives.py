@@ -117,8 +117,21 @@ def make_fixture(root, builder):
     bin_dir.mkdir()
 
     clang = bin_dir / 'clang'
+    # A compiler that behaves like the one CI actually resolves: upstream clang, which has no
+    # -Wunnecessary-virtual-specifier (an Apple-only option). Like the real one it reports an unknown
+    # -Wno- option as an error when -Werror is in effect, and stays quiet when the command also says
+    # -Wno-unknown-warning-option. Without that behaviour the fixture would accept any flag and this check
+    # could never notice a flag the compiler does not know.
     clang.write_text('#!/usr/bin/env python3\n'
                      'import struct, sys\n'
+                     'arguments = sys.argv[1:]\n'
+                     'known = {"-Wno-unused-parameter", "-Wno-c99-designator", "-Wno-reorder-init-list",\n'
+                     '         "-Wno-deprecated-enum-enum-conversion", "-Wno-unknown-warning-option"}\n'
+                     'unknown = [a for a in arguments if a.startswith("-Wno-") and a not in known]\n'
+                     'if unknown and "-Werror" in arguments and "-Wno-unknown-warning-option" not in arguments:\n'
+                     '    print(f"error: unknown warning option \'{unknown[0]}\' [-Werror,-Wunknown-warning-option]",\n'
+                     '          file=sys.stderr)\n'
+                     '    raise SystemExit(1)\n'
                      'out = sys.argv[sys.argv.index("-o") + 1]\n'
                      'header = struct.pack("<8I", 0xfeedfacf, 0x100000c, 0, 1, 1, 24, 0, 0)\n'
                      'build = struct.pack("<6I", 0x32, 24, 2, 0x110000, 0, 0)\n'

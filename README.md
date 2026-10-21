@@ -8,7 +8,7 @@ hardware through UEFI.
 | --- | --- |
 | [UniXNU](https://github.com/UniXNU/UniXNU) | Build driver, UEFI boot manager, DarwinBoot, generic drivers, kits and the 4 KiB XNU patches |
 | this repository | `board.toml`, defconfig, ADT generator, firmware preflight and the device package |
-| Mu-Silicium (local: `~/Src/Repo/Mu-Silicium`) | UEFI firmware port, `Platforms/Xiaomi/dadaPkg`, `Binaries/dada` |
+| Mu-Silicium (local: `~/Src/Repo/dada/Mu-Silicium`) | UEFI firmware port, `Platforms/Xiaomi/dadaPkg`, `Binaries/dada` |
 
 The UEFI side already exists: Mu-Silicium boots dada to a framebuffer, a UEFI menu, UFS and USB
 device mode. This repository adds the UniXNU values and the pieces XNU needs on top of it.
@@ -35,13 +35,13 @@ Prerequisites: `clang`, `python3`, `make`, `mtools`, `dtc`, a Mu-Silicium checko
 submodules, and a `mu_basecore` tree for `--edk2` (or let `unixnu fetch` clone it).
 
 ```sh
-cd ~/Src/Repo/UniXNU
+cd ~/Src/Repo/dada/UniXNU
 
 ./unixnu defconfig dada_defconfig -D ../UniXNU-dada
 ./unixnu fetch
 
 # 1. Firmware only: proves the dada DSC, the memory map and the vendor binaries.
-./unixnu build firmware --uefi ~/Src/Repo/Mu-Silicium --edk2 <mu_basecore>
+./unixnu build firmware --uefi ~/Src/Repo/dada/Mu-Silicium --edk2 <mu_basecore>
 
 # 2. Kernel: the first run writes the compile records the device archives are built against.
 ./unixnu build kernel
@@ -51,7 +51,7 @@ cd ~/Src/Repo/UniXNU
 ./unixnu build payload --unique-chip-id <hex>
 
 # 4. Boot image: BootShim + gzip(firmware volume) + device tree, Android header v4.
-./unixnu bootimg --uefi ~/Src/Repo/Mu-Silicium --dtb ~/Src/Repo/Mu-Silicium/Resources/DTBs/dada.dtb
+./unixnu bootimg --uefi ~/Src/Repo/dada/Mu-Silicium --dtb ~/Src/Repo/dada/Mu-Silicium/Resources/DTBs/dada.dtb
 
 fastboot boot out/dada/boot/boot.img
 ```
@@ -67,15 +67,15 @@ The patches are in `docs/patches/`; apply them once to the checkouts:
 ```sh
 # 1. UniXNU verifies Android boot header v0-v2 only; dada uses v4 (no load addresses, 4 KiB page,
 #    4 KiB boot signature after the data). Adds the v3/v4 verification path.
-git -C ~/Src/Repo/UniXNU apply ~/Src/Repo/UniXNU-dada/docs/patches/unixnu-bootimg-header-v4.patch
+git -C ~/Src/Repo/dada/UniXNU apply ~/Src/Repo/dada/UniXNU-dada/docs/patches/unixnu-bootimg-header-v4.patch
 
 # 2. The Mu-Silicium BootShim writes FD_SIZE into the ARM64 header image_size field, while UniXNU
 #    verifies that the field describes the shim plus the firmware volume. One-line shim change.
-git -C ~/Src/Repo/Mu-Silicium apply ~/Src/Repo/UniXNU-dada/docs/patches/mu-silicium-bootshim-header-size.patch
+git -C ~/Src/Repo/dada/Mu-Silicium apply ~/Src/Repo/dada/UniXNU-dada/docs/patches/mu-silicium-bootshim-header-size.patch
 
 # 3. dada's DSC/FDF only list the Mu-Silicium drivers, so the firmware volume would boot Mu-Silicium's
 #    own menu. This adds the UniXNU application, its registrar and DarwinBoot.
-git -C ~/Src/Repo/Mu-Silicium apply ~/Src/Repo/UniXNU-dada/docs/patches/mu-silicium-unixnu-components.patch
+git -C ~/Src/Repo/dada/Mu-Silicium apply ~/Src/Repo/dada/UniXNU-dada/docs/patches/mu-silicium-unixnu-components.patch
 ```
 
 Patch 3 has to come after any change of your own to `dada.dsc`/`dada.fdf`; it is a plain context
@@ -93,7 +93,7 @@ belongs to the UEFI port, as uefi-sheng carries it too.
 
 ### Verified on this machine
 
-Linux host, Mu-Silicium at `~/Src/Repo/Mu-Silicium`, `mu_basecore` at `cfb93724a0`, RELEASE.
+Linux host, Mu-Silicium at `~/Src/Repo/dada/Mu-Silicium`, `mu_basecore` at `cfb93724a0`, RELEASE.
 
 | Step | Result |
 | --- | --- |
@@ -127,10 +127,15 @@ preflight scripts.
 The Mu-Silicium checkout still builds on its own:
 
 ```sh
-cd ~/Src/Repo/Mu-Silicium
+cd ~/Src/Repo/dada/Mu-Silicium
 python3 build_uefi.py -d dada -r RELEASE -c
 # -> Build/dadaPkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd (0x300000 bytes)
 ```
+
+Note: this only works while `dada.dsc`/`dada.fdf` carry no UniXNU components, because
+`build_uefi.py` does not put the UniXNU package paths on `PACKAGES_PATH`. With the components in
+place (patch 3 applied) use `./unixnu build firmware --uefi ../Mu-Silicium` instead. `-c` also
+deletes `Mu-*.*`, including `Mu-dada.img`.
 
 ## Files
 

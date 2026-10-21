@@ -72,7 +72,14 @@ git -C ~/Src/Repo/UniXNU apply ~/Src/Repo/UniXNU-dada/docs/patches/unixnu-bootim
 # 2. The Mu-Silicium BootShim writes FD_SIZE into the ARM64 header image_size field, while UniXNU
 #    verifies that the field describes the shim plus the firmware volume. One-line shim change.
 git -C ~/Src/Repo/Mu-Silicium apply ~/Src/Repo/UniXNU-dada/docs/patches/mu-silicium-bootshim-header-size.patch
+
+# 3. dada's DSC/FDF only list the Mu-Silicium drivers, so the firmware volume would boot Mu-Silicium's
+#    own menu. This adds the UniXNU application, its registrar and DarwinBoot.
+git -C ~/Src/Repo/Mu-Silicium apply ~/Src/Repo/UniXNU-dada/docs/patches/mu-silicium-unixnu-components.patch
 ```
+
+Patch 3 has to come after any change of your own to `dada.dsc`/`dada.fdf`; it is a plain context
+patch against the committed files.
 
 With both applied, the boot image for dada packs and verifies:
 
@@ -96,6 +103,19 @@ Linux host, Mu-Silicium at `~/Src/Repo/Mu-Silicium`, `mu_basecore` at `cfb93724a
 | `unixnu bootimg` | Android v4, 2,195,456 bytes, sha256 `8b796bc356218881…` |
 | payload layout | 112-byte shim + `0x300000` firmware volume, gzip 3,145,840 bytes, 966,281-byte DTB appended |
 | `fastboot boot` | not run; nothing has been flashed yet |
+
+With patch 3 applied the volume contains the three UniXNU components and the boot image grows to
+2,228,224 bytes:
+
+| Component | Output |
+| --- | --- |
+| `UniXNUPkg/Driver/UniXNUDxe/UniXNUDxe.inf` | `UniXNUDxe.efi`, 9,728 bytes |
+| `UniXNUPkg/Application/UniXNU/UniXNU.inf` | `UniXNU.efi`, 81,408 bytes |
+| `DarwinBootPkg/Driver/DarwinBoot.inf` | `DarwinBoot.efi`, 18,432 bytes |
+
+`Build/dadaPkg/RELEASE_CLANGPDB/FV/FVMAIN.inf` lists all three FFS files, so they are inside the
+compressed firmware volume. Without a payload volume on the ramdisk the menu has nothing to start;
+that is the expected Stage 2 result until `unixnu build kernel` has run on macOS.
 
 The preflight finds the UEFI checkout from `--uefi`, `$UNIXNU_UEFI`, a usual name in the working
 directory, or a sibling of the device repository, because the driver does not export `--uefi` to

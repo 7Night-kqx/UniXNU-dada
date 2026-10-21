@@ -89,6 +89,7 @@ Two stock trees need a change before `unixnu bootimg` accepts the image; the pat
 | --- | --- | --- |
 | `unixnu-bootimg-header-v4.patch` | UniXNU | `verify()` only understood header v0-v2; v4 has no addresses, a fixed 4 KiB page and a 4 KiB signature block |
 | `mu-silicium-bootshim-header-size.patch` | Mu-Silicium | `BootShim.S` writes `FD_SIZE` into the ARM64 `image_size`; UniXNU verifies shim + firmware volume |
+| `mu-silicium-unixnu-components.patch` | Mu-Silicium | puts `UniXNU.inf`, `UniXNUDxe.inf` and `DarwinBoot.inf` into `dada.dsc`/`dada.fdf`; without it the volume holds only Mu-Silicium and the menu you see is Mu-Silicium's |
 
 Checked locally against the RELEASE firmware volume, with an empty ramdisk:
 

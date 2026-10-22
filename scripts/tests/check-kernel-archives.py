@@ -49,6 +49,11 @@ ARCHIVES = {
 failures = []
 passes = []
 
+# (switch, builder the switch requires, archive the kernel script must link)
+REQUIRED_TOGETHER = (
+    ('XNU_NATIVE_UFS', ('build-storage-classes.py', None), 'build/storage-classes/libStorageClasses.a'),
+)
+
 
 def check(ok, message):
     (passes if ok else failures).append(message)
@@ -89,6 +94,19 @@ def check_archives(device, tree):
                 check(archive in script, f'{name} archive {archive} is the one the kernel script reads')
         else:
             check(not has_builder, f'{name}=n lists no builder')
+
+    # Some archives exist only to supply symbols a selected one needs. The storage transports derive from
+    # IOBlockStorageDevice, which is a class of Apple's separate IOStorageFamily project rather than of the
+    # xnu tree, so a kernel that links a transport needs the base class compiled and linked before it --
+    # otherwise the link stops with "vtable for IOBlockStorageDevice" undefined. A builder listed here must
+    # be present exactly when its switch is on, and the kernel script must read that archive.
+    for switch, builder, archive in REQUIRED_TOGETHER:
+        enabled = switches.get(switch, 'n') == 'y'
+        check((builder in listed) == enabled,
+              f'{switch}={"y" if enabled else "n"} lists {builder[0]} {"and" if enabled else "only when it does not"} '
+              f'needs it')
+        if enabled and script:
+            check(archive in script, f'{switch}=y links {archive}')
 
 
 def check_products(device, builder):

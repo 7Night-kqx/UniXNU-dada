@@ -70,6 +70,7 @@ archives = [
   "build-arm-driver.py ArmCpu",
   "build-arm-driver.py NativeAES",
   "build-native-aes-bindings.py",
+  "build-storage-classes.py",
   "build-arm-driver.py NativeUfs",
   "build-libpthread-kernel.py",
 ]

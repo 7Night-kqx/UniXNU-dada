@@ -199,6 +199,22 @@ owner-root path (on the sheng reference port `build-sheng-platform-power.py` ins
 path also needs storage -- it authenticates the root volume -- so it cannot come before the storage
 driver anyway.
 
+Dropping AMFI from the roots is not enough on its own: the prelink plan selects the roots *and their
+`OSBundleLibraries` dependency closure*, and four of the roots declare AMFI as a dependency:
+
+| Root | Declares |
+| --- | --- |
+| `com.apple.iokit.IOGPUFamily` | `com.apple.driver.AppleMobileFileIntegrity` |
+| `com.apple.iokit.IOMobileGraphicsFamily` | `com.apple.driver.AppleMobileFileIntegrity` |
+| `com.apple.iokit.IOHIDFamily` | `com.apple.driver.AppleMobileFileIntegrity` |
+| `com.apple.security.sandbox` | `com.apple.driver.AppleMobileFileIntegrity` |
+
+So those four are out as well (they are the GPU, the display accelerator, the input stack and the
+sandbox -- none of them is needed for the video console, which is XNU's own pexpert console drawn
+straight into the framebuffer), together with the codeless `com.apple.iokit.IOHIDEventDriver` that
+only exists for IOHIDFamily. `com.apple.driver.ApplePMGR` was only ever in the closure as a
+dependency of AMFI, so it goes too. The closure of the remaining 24 roots holds no AMFI.
+
 The early security initializer only ran the AMFI initializer, so it goes with AMFI; the kernel calls
 an early initializer only when the prelink metadata names one. The ADT loses
 `amfi-only-platform-code` as well: only AMFI reads it.

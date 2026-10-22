@@ -1323,11 +1323,17 @@ bool NativeUfsBlock::configure (const char *name, uint64_t absoluteOffset, uint6
 #endif
 }
 
+// The read timer is not part of verified block mode: every transport read is timed, whether or not the
+// window is authenticated. Both symbols therefore stay outside the guard below -- the read path uses them
+// unconditionally, and keeping them inside made a plain (unverified) NativeUfs build fail with
+// "use of undeclared identifier 'timerTicks'".
+volatile uint64_t native_ufs_read_ticks = 0;
+static inline uint64_t timerTicks (void) {uint64_t v; __asm__ volatile ("isb\n\tmrs %0, cntpct_el0" : "=r" (v)); return v;}
+
 #if defined(NATIVE_VERIFIED_BLOCK) && NATIVE_VERIFIED_BLOCK
 volatile uint64_t native_ufs_verified_blocks = 0;
-// Time spent hashing/verifying and reading from the UFS transport, in generic-timer ticks (diagnostic only).
-volatile uint64_t native_ufs_verify_ticks = 0, native_ufs_read_ticks = 0;
-static inline uint64_t timerTicks (void) {uint64_t v; __asm__ volatile ("isb\n\tmrs %0, cntpct_el0" : "=r" (v)); return v;}
+// Time spent hashing/verifying, in generic-timer ticks (diagnostic only).
+volatile uint64_t native_ufs_verify_ticks = 0;
 volatile uint32_t native_ufs_integrity_failures = 0;
 
 bool NativeUfsBlock::configureVerification ()

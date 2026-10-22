@@ -223,6 +223,68 @@ def check_verified_mode(builder):
               'a bundle still requires --verified-root')
 
 
+def conditional_depth(path):
+    """Return, for each line, how many #if blocks it is inside."""
+    depths = []
+    depth = 0
+    for line in path.read_text().splitlines():
+        depths.append(depth)
+        stripped = line.strip()
+        if stripped.startswith('#if'):
+            depth += 1
+        elif stripped.startswith('#endif'):
+            depth -= 1
+    return depths
+
+
+def guarded_definitions(lines, depths):
+    """Names declared at file scope inside a conditional guard, with the line that declares them.
+
+    Only unindented declarations count. A call inside a guarded block is a use, not a definition, and
+    leaving it in the set would hide the very defect this looks for: a call site at the guard's own
+    depth would make the declaration look guarded all the way through.
+    """
+    declared = {}
+    for index, line in enumerate(lines):
+        if not depths[index] or line[:1].isspace() or line.lstrip().startswith(('//', '*', '#')):
+            continue
+        match = re.match(r'\s*(?:volatile\s+|static\s+|inline\s+|extern\s+|const\s+|unsigned\s+|struct\s+|class\s+|'
+                         r'[A-Za-z_]\w*[\s*&]+)+([A-Za-z_]\w*)\s*(?:=|\()', line)
+        if match:
+            declared.setdefault(match.group(1), index)
+            # "volatile uint64_t a = 0, b = 0;" declares b on the same line, and a symbol that is declared
+            # only here is exactly what this check is about.
+            for extra in re.findall(r',\s*([A-Za-z_]\w*)\s*(?==|,|;)', line):
+                declared.setdefault(extra, index)
+    return declared
+
+
+def check_verified_symbols(device):
+    """A symbol declared only under NATIVE_VERIFIED_BLOCK must not be used outside that guard.
+
+    The plain NativeUfs build -- the one board.toml [kernel] archives lists, without --verified-root --
+    does not define NATIVE_VERIFIED_BLOCK, so an unguarded use of timerTicks() or native_ufs_read_ticks
+    fails with "use of undeclared identifier". The CI compile reported exactly that, three errors in
+    total, while the declaration sat twenty lines above inside the guard.
+
+    This is a preprocessing question, not a compiler question, so it needs no Xcode.
+    """
+    for source in sorted((device / 'drivers').glob('*/*.cpp')):
+        lines = source.read_text().splitlines()
+        depths = conditional_depth(source)
+        relative = source.relative_to(device)
+        for name, declared_at in sorted(guarded_definitions(lines, depths).items()):
+            if len(name) < 4:
+                continue
+            uses = [index + 1 for index, line in enumerate(lines)
+                    if index != declared_at and depths[index] == 0
+                    and not line.lstrip().startswith(('//', '*'))
+                    and re.search(rf'\b{re.escape(name)}\b', line)]
+            check(not uses,
+                  f'{relative}: {name} is declared only under NATIVE_VERIFIED_BLOCK (line {declared_at + 1}) '
+                  f'but used outside it: lines {uses}')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--device', type=Path, help='device repository (default: the one this script is in)')
@@ -255,6 +317,7 @@ def main():
     check_archives(device, tree)
     check_products(device, builder)
     check_verified_mode(builder)
+    check_verified_symbols(device)
     return report()
 
 

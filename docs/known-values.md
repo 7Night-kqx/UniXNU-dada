@@ -225,6 +225,13 @@ so `NativeUfsBlock::start()` returns `true` instead of `configureVerification()`
 and no policy bundle the driver refuses with `policy count invalid` and never publishes the device. See
 *Kernel build* above for the builder that controls this.
 
+Only the verifying path is guarded, not the read timer: `native_ufs_read_ticks` and `timerTicks()` are
+declared outside the `#if`, because `doAsyncReadWrite()` times every transport read whether or not the
+window is authenticated. `scripts/tests/check-kernel-archives.py` keeps that split: it reads the
+preprocessor structure of `drivers/*/*.cpp` and fails if a symbol declared only under
+`NATIVE_VERIFIED_BLOCK` is used outside the guard. A plain build with the declaration inside failed the
+archive compile with three `use of undeclared identifier` errors.
+
 ## Other paths seen on the phone
 
 From the mainline Linux work in `dada-uefi.md`: the ESP is `/dev/sda35`, the Linux rootfs

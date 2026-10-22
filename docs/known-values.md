@@ -50,7 +50,7 @@ of the two prime cores, and requires `Aff0 == 0`.
 | --- | --- | --- |
 | `dram-base` | `0x80000000` | DDR starts here on SM8750 |
 | `dram-size` | `0x80000000` (2 GiB) | Measured 15.12 GiB total but fragmented across 16 regions (`0xa00000000` 8 GiB, `0x8c0000000` 5 GiB, rest scattered below `0xd8000000`); the ADT holds one contiguous pair, so 2 GiB is the conservative first-boot value. See *Memory map* below |
-| `owned-memory-size` | `0x40000000` (1 GiB) | **TODO(device)**: enlarge for the Data ramdisk stage |
+| `owned-memory-size` | `0x10000000` (256 MiB) | The window DarwinBoot hands to XNU, as ONE conventional-memory run. 256 MiB is the size that was measured to allocate on this phone (the run the loader picked was at physical `0xbc007c000`); 1 GiB was never observed to be allocatable. **TODO(device)**: enlarge for the Data ramdisk stage |
 | `chip_id` | `0x208` | software identity seed for `IOPlatformUUID`, not an Apple chip id |
 | `cpu_regs` | see above | |
 | `psci_method` | `smc` | stock DT `enable-method = "psci"` |
@@ -156,10 +156,64 @@ archive builders in `board.toml [kernel] archives` are exactly the ones those sw
 | `XNU_SOURCE_PTHREAD` | `y` | `build-libpthread-kernel.py` |
 | `XNU_ARM_DT_PLATFORM` | `y` | `build-arm-driver.py ArmDTPlatform` |
 | `XNU_ARMCPU` | `y` | `build-arm-driver.py ArmCpu` |
-| `XNU_NATIVE_UFS` | `y` | `build-arm-driver.py NativeUfs` |
+| `XNU_NATIVE_UFS` | `n` | none (see *Why the storage transport is off* below) |
 | `XNU_NATIVE_AES` | `y` | `build-arm-driver.py NativeAES` + `build-native-aes-bindings.py` |
 | `XNU_BOOT_PROGRESS` | `n` | none |
 | `XNU_NATIVE_LEGACY_DISPLAY` | `n` | none |
+
+### Why the storage transport is off
+
+`CONFIG_XNU_NATIVE_UFS` is `n` on this board. Two independent reasons:
+
+1. The `NativeUfs` in this tree is the sheng (SM8550) driver. It hardcodes that controller's
+   compatible names and its GCC clock offsets, and the stock dada device tree carries no `ufshc` `reg`
+   for it, so it cannot drive this phone yet (see *UFS* below and `docs/ufs-sm8750.md`).
+2. It cannot even be *linked* here. A transport derives from `IOBlockStorageDevice`, a class that is
+   not in the xnu tree, so the port compiles that class from Apple's IOStorageFamily source and links
+   it into the kernel. The kernelcache's own `com.apple.iokit.IOStorageFamily` kext defines the same
+   class name, and `OSMetaClass` panics on the collision:
+
+   ```
+   OSMetaClass: Kext com.apple.iokit.IOStorageFamily class IOBlockStorageDevice is a duplicate;
+    kext __kernel__ already has a class by that name. cpp:896
+   ```
+
+   That was the second panic this port reached (the first was the panic-log address, below). With the
+   transport off, the class is not built into the kernel, the prelinked kext registers cleanly, and the
+   boot reaches the root mount -- where the missing driver is what stops it.
+
+### Why AMFI is not prelinked
+
+`com.apple.driver.AppleMobileFileIntegrity` (AMFI) and `com.apple.driver.ApplePMGR` are not in
+`[kernel.prelink] roots`, and `[kernel.prelink] early_security_init` is not set.
+
+AMFI asks the policy manager (PMGR) for every policy decision and panics with
+
+```
+"AMFI: No PMGR?y\n" @ConfigurationSettings.cpp:235
+```
+
+when no PMGR has published its nub. Nothing on this board publishes one: the PMGR path is the
+owner-root path (on the sheng reference port `build-sheng-platform-power.py` instantiates Apple's own
+`ApplePMGR` class to publish the nub), and owner-root is out of scope for this port. The owner-root
+path also needs storage -- it authenticates the root volume -- so it cannot come before the storage
+driver anyway.
+
+The early security initializer only ran the AMFI initializer, so it goes with AMFI; the kernel calls
+an early initializer only when the prelink metadata names one. The ADT loses
+`amfi-only-platform-code` as well: only AMFI reads it.
+
+Without AMFI the boot continues past the kext starts into the root mount, where the missing storage
+driver is what stops it.
+
+### Why the panic log region comes from the device tree
+
+`CONFIG_XNU_DT_PANIC_REGION=y`. With it off, pexpert's `check_for_panic_log()` falls back to
+`PLATFORM_PANIC_LOG_PADDR` (`0x3c0fc000`), the QEMU/Raspberry Pi address of the BCM2837 platform
+file. On this board that address is a hole in DRAM, so the kernel mapped it and then cleared 16 KiB
+there before the console existed: the write aborted and the boot hung with no output at all. With the
+switch on, the region is looked up in the device tree; the board has no panic region yet, so the
+lookup fails and the whole path is skipped -- what the sheng reference port does too.
 
 ### Why boot progress is off
 
@@ -189,6 +243,25 @@ defined. That path requires an owner-signed policy bundle at run time: with no p
 `scripts/build-arm-driver.py` therefore does not force the macro; it follows `--verified-root`, matching
 `sheng`'s `CONFIG_XNU_VERIFIED_ROOT_PROBE=y` + bundle. dada has no bundle yet, so the driver compiles
 without it and `start()` returns `true` directly.
+
+## Boot progress on the phone
+
+Measured, in order, on the real device (each step is the panic the screen showed):
+
+| Step | What the screen showed | Cause |
+| --- | --- | --- |
+| 1 | black screen, no output, no probe answered | `check_for_panic_log()` mapped the BCM2837 panic-log address in a DRAM hole and wrote to it before the console existed |
+| 2 | kernel console output, then a panic screen with a message, `TCR=`, `SCTRL=`, `pages=`, `free=` | the panic screen renderer works: the message and the register sample are drawn on the framebuffer |
+| 3 | `OSMetaClass: ... IOBlockStorageDevice is a duplicate` | the port built `IOBlockStorageDevice` into the kernel, colliding with the kernelcache's own IOStorageFamily kext |
+| 4 | `"AMFI: No PMGR?y\n" @ConfigurationSettings.cpp:235` | AMFI wanted the PMGR nub that only the owner-root path publishes |
+
+Step 1 is fixed by the device-tree panic region; step 3 by leaving the storage transport out; step 4
+by leaving AMFI and the PMGR out of the prelinked kernel. The next stop is the root mount, where
+`IOKitBSDInit` panics with `Failed to mount root device`
+(`iokit/bsddev/IOKitBSDInit.cpp:921`) because no driver publishes this board's UFS.
+
+The `?y` in the step 4 message is literal text of the kext's message, not a rendering fault: the panic
+screen skips characters below 32 and prints the rest as they are.
 
 ## Open measurements (in order of need)
 

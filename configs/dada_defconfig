@@ -8,7 +8,20 @@ CONFIG_XNU_SOURCE_CORECRYPTO14=y
 CONFIG_XNU_SOURCE_PTHREAD=y
 CONFIG_XNU_ARM_DT_PLATFORM=y
 CONFIG_XNU_ARMCPU=y
-CONFIG_XNU_NATIVE_UFS=y
+# The storage transport is off on this board. The NativeUfs in this tree is the sheng (SM8550) driver:
+# it hardcodes that controller's compatible names and GCC offsets, and the stock dada device tree
+# carries no ufshc reg for it (see scripts/make-dada-adt.py), so it cannot drive this phone yet.
+#
+# It also cannot be linked here at all: a transport derives from IOBlockStorageDevice, and that class
+# is not in the xnu tree, so the port compiles it from Apple's IOStorageFamily source and links it
+# into the kernel. The kernelcache's own com.apple.iokit.IOStorageFamily kext defines the same class
+# name, and OSMetaClass panics on the collision:
+#   "OSMetaClass: Kext com.apple.iokit.IOStorageFamily class IOBlockStorageDevice is a duplicate;
+#    kext __kernel__ already has a class by that name." (libkern/c++/OSMetaClass.cpp:894)
+# With the transport off, that class is not built in, the prelinked kext registers cleanly, and the
+# kernel reaches the real missing-driver panic: with no driver for this board's UFS there is no root
+# media, and IOKitBSDInit panics with "Failed to mount root device".
+CONFIG_XNU_NATIVE_UFS=n
 CONFIG_XNU_NATIVE_AES=y
 CONFIG_XNU_TRUST_CACHE_RUNTIME=y
 CONFIG_XNU_NATIVE_CS_HASH_CACHE=y

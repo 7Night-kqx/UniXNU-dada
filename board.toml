@@ -56,6 +56,13 @@ defconfig = "dada_defconfig"
 #   build-arm-driver.py NativeAdreno          no Adreno 830 driver exists
 #   build-native-adreno-kits.py, build-native-adreno-accelerator.py   same
 #   build-native-legacy-display.py           CONFIG_XNU_NATIVE_LEGACY_DISPLAY is off; see below
+#   build-arm-driver.py NativeUfs             CONFIG_XNU_NATIVE_UFS is off on this board (see the
+#                                             defconfig: the tree's transport is SM8550 code)
+#   build-storage-classes.py                  the IOBlockStorageDevice base class only exists to give
+#                                             that transport a base; with the transport off, building the
+#                                             class in would collide with the kernelcache's own
+#                                             com.apple.iokit.IOStorageFamily kext and panic the boot
+#                                             in OSMetaClass
 #
 # The console does not need the legacy display instrument: DarwinBoot fills boot_args.Video[6] from the
 # UEFI GOP (drivers/DarwinBoot BootVideo.h, base/display/rowBytes/width/height/depth) and XNU's own
@@ -70,8 +77,6 @@ archives = [
   "build-arm-driver.py ArmCpu",
   "build-arm-driver.py NativeAES",
   "build-native-aes-bindings.py",
-  "build-storage-classes.py",
-  "build-arm-driver.py NativeUfs",
   "build-libpthread-kernel.py",
 ]
 

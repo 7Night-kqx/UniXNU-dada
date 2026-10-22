@@ -196,7 +196,7 @@ kernel_args = [
   # Level 3 now: adopt the controller, program the SMMU bypass (stream 0x60 -> bank 1),
   # replace the request list at utrlba=d4bf7000 and ring the doorbell. Nothing is written
   # to the storage.
-  "native-ufs-probe=3",
+  "native-ufs-probe=4",
   "-no_slto_panic",
   "ml-timeout-lock-panic-scale=40",
 ]

@@ -296,12 +296,17 @@ Measured, in order, on the real device (each step is the panic the screen showed
 | 3 | `OSMetaClass: ... IOBlockStorageDevice is a duplicate` | the port built `IOBlockStorageDevice` into the kernel, colliding with the kernelcache's own IOStorageFamily kext |
 | 4 | `"AMFI: No PMGR?y\n" @ConfigurationSettings.cpp:235` | AMFI wanted the PMGR nub that only the owner-root path publishes |
 | 5 | `amfi interface not available @kern_trustcache.c:477` | the kernel's own trust cache runtime demands the AMFI interface, and AMFI was no longer prelinked |
+| 6 | `Failed to mount root device @IOKitBSDInit.cpp:304` | **the goal**: the boot reached the root mount, and no driver publishes this board's UFS, so there is no root media |
 
 Step 1 is fixed by the device-tree panic region; step 3 by leaving the storage transport out; steps
 4 and 5 by leaving AMFI and the PMGR out of the prelinked kernel and by compiling the trust cache
-runtime out. The next stop is the root mount, where `IOKitBSDInit` panics with
-`Failed to mount root device` (`iokit/bsddev/IOKitBSDInit.cpp:921`) because no driver publishes this
-board's UFS.
+runtime out.
+
+Step 6 is the milestone of this port: the video console runs the kernel's own output, and the kernel
+stops with a genuine missing-driver panic at the root mount, because the storage transport for this
+controller does not exist yet (see *UFS* and `docs/ufs-sm8750.md`). The next work is that driver;
+after it, the root volume is mounted and the owner-root path (AMFI, PMGR, the trust bundle) becomes
+the next wall.
 
 The `?y` in the step 4 message is literal text of the kext's message, not a rendering fault: the panic
 screen skips characters below 32 and prints the rest as they are.
@@ -315,8 +320,10 @@ screen skips characters below 32 and prints the rest as they are.
 5. **UFS bring-up on hardware**: the compatible match and the SM8750 GCC offsets are corrected in this
    repository's `drivers/NativeUfs` override (`docs/ufs-sm8750.md`), checked by
    `tests/check_sm8750_facts.py`, and run by the firmware preflight. What is still unverified is the
-   run itself: no one has booted the phone with this driver, so the SMMU takeover, the QMP v4 sun PHY
-   state and the ICE configuration are all still assumed rather than observed.
+   run itself: the kernel now stops at the root mount with `Failed to mount root device`
+   (`IOKitBSDInit.cpp:304`), which is the expected place for it to stop while no transport for this
+   controller exists. The SMMU takeover, the QMP v4 sun PHY state and the ICE configuration are all
+   still assumed rather than observed.
 6. **`xiaomi,dada` platform expert** in XNU: a `drivers/` module for this board, built against the XNU
    compile records. `NativeUfs` matches the UFS controller through `ArmDTPlatform`, which is generic.
 

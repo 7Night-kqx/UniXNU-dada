@@ -189,13 +189,14 @@ kernel_args = [
   "debug=0x14e",
   "boot-progress=2",
   "armcpu-diagnostics=1",
-  # Probe stage 3 (previous boot) mapped the controller and reached the SMMU bypass step: GDSC
-  # powered, AXI/AHB/UNIPRO/PHY clocks enabled, HC readable, controller enabled,
-  # utrlba=d4bf7000. Then smmuBypassStream failed with "unsupported SMMU geometry": SM8750's
-  # apps_smmu ID registers don't match the sheng (SM8550) assumptions this driver was ported from.
-  # Level 7 is read-only: it dumps scr0/idr0/idr1/gfsr and every context bank's SMR/S2CR so we can
-  # see the real geometry and fix the SMMU takeover for SM8750.
-  "native-ufs-probe=7",
+  # Probe stage 7 (previous boot) dumped the real apps_smmu: scr0=0x002c0406,
+  # idr0=4c017e7f (127 groups, S1 stage-1), idr1=60000053 (83 banks, 128 pages),
+  # stream 0x60 already mapped by firmware to SMR[1]/S2CR[1]=00000001 (TYPE0, bank 1).
+  # Geometry check passed; the SMMU take-over was relaxed to reuse that existing mapping.
+  # Level 3 now: adopt the controller, program the SMMU bypass (stream 0x60 -> bank 1),
+  # replace the request list at utrlba=d4bf7000 and ring the doorbell. Nothing is written
+  # to the storage.
+  "native-ufs-probe=3",
   "-no_slto_panic",
   "ml-timeout-lock-panic-scale=40",
 ]

@@ -69,9 +69,12 @@ static UfsSmmuPlan planUfsSmmuBank(uint16_t stream, uint64_t dma, uint64_t bytes
       p.error = "reserved context bank already used"; return p;
     }
   }
+  // A bank that is already ours (stream 0x60 -> this bank) is repaired to bypass by
+  // configureUfsSmmu: the firmware left stage-1 translation on (SCTLR.M=1, hardware
+  // 2026-10-23: SCTLR[1]=0x3454599d). Only refuse a bank another stream is actively
+  // translating; our own stream's bank is quiesced before we touch it.
   uint32_t sctlr = read((p.pages + p.bank) * 4096);
-  if ((sctlr & 1) || (p.reuse && (sctlr || read(0x1000 + 4 * p.bank) != 0x10000 ||
-                                (read(0x1800 + 4 * p.bank) & ~1U)))) {
+  if (!p.reuse && (sctlr & 1)) {
     p.error = "reserved context bank not bypass"; return p;
   }
   if (p.slot == 0xffffffffU) p.error = "no free stream-match group";
@@ -110,12 +113,15 @@ static const char *configureUfsSmmu(const UfsSmmuPlan &p, uint16_t stream, Read 
 {
   if (p.error) return p.error;
   unsigned cb = (p.pages + p.bank) * 4096;
-  if (!p.reuse) write(cb, 0);
+  // Repair the bank to bypass even when it is already ours: the firmware left
+  // stage-1 translation on (SCTLR.M=1) and CBAR pointing at a page table we must
+  // not follow. Quiesce the UFS queue first so no in-flight translation is live.
+  write(cb, 0);
   if (read(cb) != 0) return "SMMU bypass disable readback";
   // Set VA64 before exposing a newly allocated stream. Repair an exclusive
   // existing 32-bit bypass too; do not silently reuse the faulty state.
   if (read(0x1800 + 4 * p.bank) != 1) write(0x1800 + 4 * p.bank, 1);
-  if (!p.reuse) write(0x1000 + 4 * p.bank, 0x10000);
+  write(0x1000 + 4 * p.bank, 0x10000);
   if (read(0x1800 + 4 * p.bank) != 1 || read(0x1000 + 4 * p.bank) != 0x10000 || read(cb) != 0)
     return "SMMU VA64 bypass readback";
   if (!p.reuse) {

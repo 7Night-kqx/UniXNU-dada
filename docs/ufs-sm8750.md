@@ -16,7 +16,9 @@ The base build driver gives a device repository's module the same name priority 
 driver   NativeUfs                device
 ```
 
-Nothing in the base repository or in the submodule was modified.
+Nothing in the base repository's driver source was modified. The base repository's kernel build
+script has one change for this board: the `IOBlockStorageFamily` base class is linked only when the
+transport is not in probe-only mode (section 5).
 
 ## 1. Controller compatible
 
@@ -81,7 +83,68 @@ The GCC window remains read-only. All 13 `write32` calls in `NativeUfs.cpp` targ
 therefore corrupt a *read*, which makes the probe report a misleading power state, but cannot corrupt
 a GCC register.
 
-## 4. Still open
+## 4. What the mainline Linux port says
+
+`dada_kernel/linux` is a working Linux on this phone, and its UFS stack is the reference for what a
+real SM8750 UFS host needs. Three facts from it agree with this port:
+
+- **The host controller programming is the SM8550 one.** `drivers/ufs/host/ufs-qcom.c` maps
+  `qcom,sm8750-ufshc` to `ufs_qcom_sm8550_drvdata` (`quirks = UFSHCD_QUIRK_BROKEN_LSDBS_CAP`,
+  `no_phy_retention = true`), the same data as `qcom,sm8550-ufshc`. So a transport written for
+  SM8550 is the right starting point for SM8750; only the clock offsets differ, and they are in
+  section 2.
+- **The SMMU stream is 0x60.** The mainline `sm8750.dtsi` node `ufs_mem_hc` has
+  `iommus = <&apps_smmu 0x60 0>`, which is the stream id the driver's own SMMU takeover looks for.
+- **The clock branches are the eight the driver programs**: `core_clk` (GCC_UFS_PHY_AXI_CLK),
+  `bus_aggr_clk` (GCC_AGGRE_UFS_PHY_AXI_CLK), `iface_clk` (GCC_UFS_PHY_AHB_CLK),
+  `core_clk_unipro` (GCC_UFS_PHY_UNIPRO_CORE_CLK), `ref_clk` (RPMH_LN_BB_CLK3), `tx_lane0_sync_clk`,
+  `rx_lane0_sync_clk` and `rx_lane1_sync_clk`. The `GccUfs.h` table has nine entries: those eight
+  plus the ICE core clock, which this driver does not program.
+
+The mainline stack also *programs* the PHY (`drivers/phy/qualcomm/phy-qcom-qmp-ufs.c`, QMP v4 for
+sun). This driver does not: it takes over the controller the firmware left running. That is a
+reasonable assumption on this phone, because the phone's own UEFI drives the same UFS before
+DarwinBoot runs (`Mu-Silicium/Mu_Basecore/MdeModulePkg/Bus/Ufs/UfsBlockIoPei`, `UfsPassThruDxe`).
+
+## 5. Probe mode: the first hardware run
+
+The transport derives from `IOBlockStorageDevice`, and that class is not in the xnu tree: the port
+compiles it from Apple's IOStorageFamily source and links it into the kernel. The kernelcache's own
+`com.apple.iokit.IOStorageFamily kext` defines the same class name, and `OSMetaClass` refuses the
+second registration:
+
+```
+OSMetaClass: Kext com.apple.iokit.IOStorageFamily class IOBlockStorageDevice is a duplicate;
+kext __kernel__ already has a class by that name. (libkern/c++/OSMetaClass.cpp:894)
+```
+
+The prelinked kext cannot simply be dropped: `com.apple.driver.AppleARMPlatform` and
+`com.apple.filesystems.apfs` both list it in `OSBundleLibraries`, so the prelink closure pulls it
+back in.
+
+So the transport is built with its block-device half left out (`XNU_NATIVE_UFS_PROBE_ONLY`):
+
+- `drivers/NativeUfs/NativeUfs.cpp` guards the `IOBlockStorageDevice` include, the `NativeUfsBlock`
+  class and the root-window publication code with `#ifdef NATIVE_UFS_BLOCK_DEVICE`;
+- `scripts/build-arm-driver.py NativeUfs --probe-only` defines `XNU_NATIVE_UFS_PROBE_ONLY=1` and
+  leaves the IOStorageFamily include path out (the staged headers exist for a base class that this
+  build does not have);
+- the kernel script links `build/storage-classes/libStorageClasses.a` only when the probe-only
+  switch is off, so the class is not registered in the kernel at all and the prelinked kext keeps
+  the name to itself.
+
+What is left of the driver still does the hardware work: the ladder `native-ufs-probe=1..13` (a
+kernel argument, `board.toml [kernel] kernel_args`) maps the GCC and the controller, dumps their
+registers, takes over the controller the firmware left up and issues read-only SCSI commands.
+Nothing is written to the storage, the controller is not reset and the link is not restarted.
+
+The first run is level 2 (the register dump alone). What it has to show:
+
+- `gdsc` bit 31 set (the UFS GDSC is powered) and the `axi`/`ahb` branches enabled;
+- `hc_read=1` with a plausible `cap` (`0x00010000`-ish, `HCS`/`HCE` capability bits) and `ver`;
+- `utrlba` pointing at the firmware's request list.
+
+## 6. Still open
 - **UFS PHY**: the stock tree has `ufsphy_mem@1d80000` with `compatible = "qcom,ufs-phy-qmp-v4-sun"`,
   a sun-specific QMP PHY. `NativeUfs` does not program the PHY; it relies on the firmware having left
   the link up, as on sheng.
@@ -90,5 +153,6 @@ a GCC register.
   in a form this driver reads, so the takeover is unverified on dada.
 - **ICE**: the inline crypto engine sits at `0x1d90000` per the stock tree (`reg-names = "ice"`).
   `NativeUfs` does not configure it; reads are unencrypted through the same path sheng uses.
-- **No hardware run**: neither change has been exercised on the phone. The kernel step still needs a
-  macOS runner with Xcode, and the first boot is what will show whether the controller enumerates.
+- **No hardware run yet**: the probe mode has never been exercised on the phone. The kernel step
+  needs a macOS runner with Xcode, and the first boot is what will show whether the controller
+  enumerates.

@@ -8,20 +8,31 @@ CONFIG_XNU_SOURCE_CORECRYPTO14=y
 CONFIG_XNU_SOURCE_PTHREAD=y
 CONFIG_XNU_ARM_DT_PLATFORM=y
 CONFIG_XNU_ARMCPU=y
-# The storage transport is off on this board. The NativeUfs in this tree is the sheng (SM8550) driver:
-# it hardcodes that controller's compatible names and GCC offsets, and the stock dada device tree
-# carries no ufshc reg for it (see scripts/make-dada-adt.py), so it cannot drive this phone yet.
+# The storage transport is on for this board, but in probe-only mode.
 #
-# It also cannot be linked here at all: a transport derives from IOBlockStorageDevice, and that class
-# is not in the xnu tree, so the port compiles it from Apple's IOStorageFamily source and links it
-# into the kernel. The kernelcache's own com.apple.iokit.IOStorageFamily kext defines the same class
-# name, and OSMetaClass panics on the collision:
+# The NativeUfs in this tree is the sheng (SM8550) driver. What SM8750 needs of it is now done: the
+# compatible match covers "qcom,ufshc" (the stock dada tree) as well as the SoC-qualified names, and
+# the nine GCC clock offsets are the SM8750 ones (docs/ufs-sm8750.md has the table and its source).
+#
+# The transport cannot publish a block device yet: a transport derives from IOBlockStorageDevice, and
+# that class is not in the xnu tree, so the port compiles it from Apple's IOStorageFamily source and
+# links it into the kernel. The kernelcache's own com.apple.iokit.IOStorageFamily kext defines the
+# same class name, and OSMetaClass panics on the collision:
 #   "OSMetaClass: Kext com.apple.iokit.IOStorageFamily class IOBlockStorageDevice is a duplicate;
 #    kext __kernel__ already has a class by that name." (libkern/c++/OSMetaClass.cpp:894)
-# With the transport off, that class is not built in, the prelinked kext registers cleanly, and the
-# kernel reaches the real missing-driver panic: with no driver for this board's UFS there is no root
-# media, and IOKitBSDInit panics with "Failed to mount root device".
-CONFIG_XNU_NATIVE_UFS=n
+# The prelinked kext cannot be dropped instead: com.apple.driver.AppleARMPlatform and
+# com.apple.filesystems.apfs both depend on it, so the prelink closure pulls it back in.
+#
+# So the transport is built without its block-device half (XNU_NATIVE_UFS_PROBE_ONLY): the driver
+# links against no IOStorageFamily symbol, the base class stays out of the kernel, the prelinked
+# kext registers cleanly, and the driver can still do what a probe can: map the controller, dump
+# the registers, take over the controller the firmware left up and issue read-only commands
+# (native-ufs-probe=1..13 in board.toml [kernel] kernel_args).
+#
+# The probe also tells whether the link is really up: the phone's own UEFI (Mu-Silicium) drives this
+# UFS before DarwinBoot runs, so the controller and the PHY are expected to be up already.
+CONFIG_XNU_NATIVE_UFS=y
+CONFIG_XNU_NATIVE_UFS_PROBE_ONLY=y
 CONFIG_XNU_NATIVE_AES=y
 # The trust cache runtime is off. The port patch native-trust-cache-runtime.patch compiles
 # trust_cache_runtime_init() into the boot only when XNU_NATIVE_TRUST_CACHE is 1, and that function

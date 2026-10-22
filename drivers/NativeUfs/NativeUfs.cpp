@@ -3,7 +3,16 @@
 // native-ufs-probe=1 is present. This is a register probe, not a storage driver.
 #include <IOKit/IOService.h>
 #include <IOKit/IOPlatformExpert.h>
+// The block-device half of this driver derives from IOBlockStorageDevice, a class of Apple's separate
+// IOStorageFamily project and not of the xnu tree. The base class has to be compiled into the kernel
+// for the driver to link, and the kernelcache's own com.apple.iokit.IOStorageFamily kext defines the
+// same class name: OSMetaClass refuses the second registration ("class IOBlockStorageDevice is a
+// duplicate; kext __kernel__ already has a class by that name"). In probe mode the block half is left
+// out entirely, so the driver links without the base class and the prelinked kext stays where it is.
+#if !defined(XNU_NATIVE_UFS_PROBE_ONLY) || !(XNU_NATIVE_UFS_PROBE_ONLY)
 #include <IOKit/storage/IOBlockStorageDevice.h>
+#define NATIVE_UFS_BLOCK_DEVICE 1
+#endif
 #include <libkern/crypto/sha2.h>
 #include <vm/vm_kern.h>
 #include <vm/vm_map.h>
@@ -1217,6 +1226,7 @@ extern "C" unsigned native_ufs_store_gpt_check (void)
   return rootCrc32 (entries, gStoreGeometry.entryCount * 128) == gStoreGeometry.entriesCrc ? 0 : 5;
 }
 
+#ifdef NATIVE_UFS_BLOCK_DEVICE
 // One read-only window of the root image as a block device: 512-byte sectors on top of 4096-byte
 // UFS blocks, so the unchanged dmg disk images (GPT with 512-byte sectors) parse as they do on
 // the virtio path.
@@ -1265,6 +1275,7 @@ public:
   IOReturn doAsyncReadWrite (IOMemoryDescriptor *, UInt64, UInt64, IOStorageAttributes *, IOStorageCompletion *) override;
 };
 OSDefineMetaClassAndStructors (NativeUfsBlock, IOBlockStorageDevice)
+#endif // NATIVE_UFS_BLOCK_DEVICE
 
 extern "C" {
 volatile uint32_t native_ufs_blocks_published = 0;
@@ -1300,6 +1311,7 @@ static void rootDiagnosticFailure (const char *reason)
   panic ("%s", gRootDiagnosticText);
 }
 
+#ifdef NATIVE_UFS_BLOCK_DEVICE
 bool NativeUfsBlock::configure (const char *name, uint64_t absoluteOffset, uint64_t size)
 {
   if (!name || !ufsWindowGeometry (absoluteOffset, size)) {
@@ -1673,6 +1685,7 @@ static void publishThread (void *, wait_result_t)
   }
   gPendingProvider->release ();  // Balanced with successful thread dispatch.
 }
+#endif // NATIVE_UFS_BLOCK_DEVICE
 
 // Memory snapshot (native-ufs-probe=13): root mode as usual, then, after a delay, the kernel's own
 // page counters on the panic screen. Observation only.
@@ -1869,6 +1882,7 @@ bool NativeUfs::start (IOService *provider)
   return false;
 }
 
+#ifdef NATIVE_UFS_BLOCK_DEVICE
 // Boot the root image's windows as block devices. Soft-fails (logs, publishes nothing).
 bool NativeUfs::startRoot (IOService *provider)
 {
@@ -1979,6 +1993,14 @@ bool NativeUfs::startRoot (IOService *provider)
   }
   return true;
 }
+#else // !NATIVE_UFS_BLOCK_DEVICE
+// Probe-only build: the driver has no block device, so there is nothing to boot the root image as.
+bool NativeUfs::startRoot (IOService *)
+{
+  panic ("NATIVE_UFS: this build has no block device (probe only)");
+  return false;
+}
+#endif // NATIVE_UFS_BLOCK_DEVICE
 
 void NativeUfs::stop (IOService *provider)
 {

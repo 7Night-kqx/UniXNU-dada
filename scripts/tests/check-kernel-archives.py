@@ -49,9 +49,17 @@ ARCHIVES = {
 failures = []
 passes = []
 
-# (switch, builder the switch requires, archive the kernel script must link)
+# (switch, builder the switch requires, archive the kernel script must link, switch that makes it
+# unnecessary)
+#
+# The probe-only transport (XNU_NATIVE_UFS_PROBE_ONLY) is the exception: it has no block-device half and
+# references no IOStorageFamily symbol, so the base class must stay out of the kernel. The kernelcache's
+# own com.apple.iokit.IOStorageFamily kext defines the same class name, and OSMetaClass panics on the
+# second registration ("class IOBlockStorageDevice is a duplicate; kext __kernel__ already has a class by
+# that name").
 REQUIRED_TOGETHER = (
-    ('XNU_NATIVE_UFS', ('build-storage-classes.py', None), 'build/storage-classes/libStorageClasses.a'),
+    ('XNU_NATIVE_UFS', ('build-storage-classes.py', None), 'build/storage-classes/libStorageClasses.a',
+     'XNU_NATIVE_UFS_PROBE_ONLY'),
 )
 
 
@@ -100,12 +108,14 @@ def check_archives(device, tree):
     # xnu tree, so a kernel that links a transport needs the base class compiled and linked before it --
     # otherwise the link stops with "vtable for IOBlockStorageDevice" undefined. A builder listed here must
     # be present exactly when its switch is on, and the kernel script must read that archive.
-    for switch, builder, archive in REQUIRED_TOGETHER:
-        enabled = switches.get(switch, 'n') == 'y'
-        check((builder in listed) == enabled,
-              f'{switch}={"y" if enabled else "n"} lists {builder[0]} {"and" if enabled else "only when it does not"} '
+    for switch, builder, archive, *off in REQUIRED_TOGETHER:
+        needed = switches.get(switch, 'n') == 'y'
+        if off and switches.get(off[0], 'n') == 'y':
+            needed = False
+        check((builder in listed) == needed,
+              f'{switch}={"y" if needed else "n"} lists {builder[0]} {"and" if needed else "only when it does not"} '
               f'needs it')
-        if enabled and script:
+        if needed and script:
             check(archive in script, f'{switch}=y links {archive}')
 
 
@@ -216,6 +226,15 @@ def check_verified_mode(builder):
         command = json.loads(emitted_command(root, 'native-ufs'))
         check(any(a == '-I' and b == storage for a, b in zip(command, command[1:])),
               'NativeUfs compiles with the staged IOStorageFamily include directory')
+
+        # The probe-only transport has no block-device half, so it must not pull in Apple's
+        # IOStorageFamily headers at all: the base class is not built into the kernel in that mode
+        # (the kernelcache's own kext keeps the class name), and the driver must link without it.
+        result = run_builder(root, 'NativeUfs', '--probe-only')
+        command = json.loads(emitted_command(root, 'native-ufs'))
+        check(result.returncode == 0 and '-DXNU_NATIVE_UFS_PROBE_ONLY=1' in command
+              and not any(a == '-I' and b == storage for a, b in zip(command, command[1:])),
+              'NativeUfs --probe-only compiles without the IOStorageFamily include directory')
 
         result = run_builder(root, 'NativeUfs', '--verified-root')
         defines = emitted_defines(root, 'native-ufs')

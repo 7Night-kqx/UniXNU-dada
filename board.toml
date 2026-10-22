@@ -56,13 +56,12 @@ defconfig = "dada_defconfig"
 #   build-arm-driver.py NativeAdreno          no Adreno 830 driver exists
 #   build-native-adreno-kits.py, build-native-adreno-accelerator.py   same
 #   build-native-legacy-display.py           CONFIG_XNU_NATIVE_LEGACY_DISPLAY is off; see below
-#   build-arm-driver.py NativeUfs             CONFIG_XNU_NATIVE_UFS is off on this board (see the
-#                                             defconfig: the tree's transport is SM8550 code)
+#   build-arm-driver.py NativeUfs             listed below, in probe-only mode
 #   build-storage-classes.py                  the IOBlockStorageDevice base class only exists to give
-#                                             that transport a base; with the transport off, building the
-#                                             class in would collide with the kernelcache's own
-#                                             com.apple.iokit.IOStorageFamily kext and panic the boot
-#                                             in OSMetaClass
+#                                             that transport a base; the probe-only transport has no
+#                                             block-device half, so the class is not built in and the
+#                                             kernelcache's own com.apple.iokit.IOStorageFamily kext
+#                                             keeps the name to itself (see the defconfig)
 #
 # The console does not need the legacy display instrument: DarwinBoot fills boot_args.Video[6] from the
 # UEFI GOP (drivers/DarwinBoot BootVideo.h, base/display/rowBytes/width/height/depth) and XNU's own
@@ -78,6 +77,7 @@ archives = [
   "build-arm-driver.py NativeAES",
   "build-native-aes-bindings.py",
   "build-libpthread-kernel.py",
+  "build-arm-driver.py NativeUfs --probe-only",
 ]
 
 [kernel.prelink]
@@ -189,6 +189,11 @@ kernel_args = [
   "debug=0x14e",
   "boot-progress=2",
   "armcpu-diagnostics=1",
+  # The UFS register probe: level 2 maps the GCC and the UFS controller and dumps their registers
+  # (clock and power state, controller capabilities, the firmware's request list base). It reads only.
+  # The ladder is native-ufs-probe=1..13 in drivers/NativeUfs; level 3 takes the controller over and
+  # issues read-only SCSI commands.
+  "native-ufs-probe=2",
   "-no_slto_panic",
   "ml-timeout-lock-panic-scale=40",
 ]

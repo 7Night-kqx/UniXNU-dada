@@ -13,6 +13,10 @@ parser.add_argument('--negative-aes-kat', action='store_true', help='Isolated ow
 parser.add_argument('--verified-root', action='store_true', help='Authenticate all actual disk reads against an independently signed immutable policy')
 parser.add_argument('--verified-root-bundle', action='store_true', help='Select exactly one capacity-matching policy per device, then independently authenticate it')
 parser.add_argument('--negative-verified-block', action='store_true', help='Negative own-buffer control: corrupt only the completed DMA snapshot')
+parser.add_argument('--probe-only', action='store_true',
+                    help='Compile the UFS transport without its IOBlockStorageDevice base class: the driver '
+                         'then links without Apple\'s IOStorageFamily class, so it does not collide with the '
+                         'kernelcache\'s own com.apple.iokit.IOStorageFamily kext. No block device is published.')
 args = parser.parse_args()
 if args.verified_root_bundle and not args.verified_root:
     parser.error('A policy bundle requires verified block mode')
@@ -78,7 +82,13 @@ command.extend(['-Wall', '-Wextra', '-Werror', '-Wno-unknown-warning-option',
                 '-Wno-deprecated-enum-enum-conversion', '-Wno-unnecessary-virtual-specifier',
                 '-I', str(ROOT / '.cache/xnu-work/osfmk')])
 if component in ('NativeVirtioBlock', 'NativeRamBlock', 'NativeUfs'):
-    command += ['-I', str(ROOT / 'build/storage-abi/include')]
+    if component == 'NativeUfs' and args.probe_only:
+        # The probe-only build has no IOBlockStorageDevice base class, so it needs neither the storage
+        # headers nor the include path that carries them: the header set is staged by
+        # build-storage-classes.py, which this build does not run.
+        command += ['-DXNU_NATIVE_UFS_PROBE_ONLY=1']
+    else:
+        command += ['-I', str(ROOT / 'build/storage-abi/include')]
     if args.verified_root:
         command += ['-I', str(ROOT / 'kits/VerifiedRoot/include'), '-DNATIVE_VERIFIED_BLOCK=1']
     if args.negative_verified_block:
@@ -92,10 +102,6 @@ if component == 'NativeUfs':
     # (configureVerification refuses to publish the device without one), so it follows --verified-root.
     command += ['-I', str(ROOT / 'kits/VerifiedRoot/include'), '-I', str(ROOT / 'drivers/NativeVirtioBlock'),
                 '-mgeneral-regs-only']
-    if args.verified_root:
-        command += ['-DNATIVE_VERIFIED_BLOCK=1']
-    if args.verified_root_bundle:
-        command += ['-DNATIVE_VERIFIED_BLOCK_MULTI_POLICY=1']
 if component=='NativeOfflineGPU':
     command += ['-I',str(ROOT/'drivers/NativeVirtioConsole')]
 if component in ('NativeLegacyDisplay','NativeHidInput'):

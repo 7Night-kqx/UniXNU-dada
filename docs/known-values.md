@@ -219,6 +219,31 @@ The early security initializer only ran the AMFI initializer, so it goes with AM
 an early initializer only when the prelink metadata names one. The ADT loses
 `amfi-only-platform-code` as well: only AMFI reads it.
 
+### Why the trust cache runtime is off
+
+Without AMFI the boot stops one step earlier, in the kernel itself:
+
+```
+amfi interface not available @kern_trustcache.c:477
+```
+
+`trust_cache_runtime_init()` (`bsd/kern/kern_trustcache.c`) demands both the Image4 and the AMFI
+interface and panics without them. The port patch `native-trust-cache-runtime.patch` compiles that
+call into the boot only when `XNU_NATIVE_TRUST_CACHE` is 1:
+
+```c
+-#ifndef BCM2837
++#if !defined(BCM2837) || (defined(XNU_NATIVE_TRUST_CACHE) && XNU_NATIVE_TRUST_CACHE)
+```
+
+so `CONFIG_XNU_TRUST_CACHE_RUNTIME=n` keeps the whole block (the runtime init *and* the static trust
+cache load) out of the kernel. Nothing else on this board needs it: the ADT carries an empty
+`TrustCache` node, and the remaining users of the `amfi` interface are the code-signing and shared
+region paths, which only run for user processes.
+
+So the two AMFI panics are both gone: the `"AMFI: No PMGR"` one needs the kext, and the
+`"amfi interface not available"` one needs the runtime.
+
 Without AMFI the boot continues past the kext starts into the root mount, where the missing storage
 driver is what stops it.
 
@@ -270,11 +295,13 @@ Measured, in order, on the real device (each step is the panic the screen showed
 | 2 | kernel console output, then a panic screen with a message, `TCR=`, `SCTRL=`, `pages=`, `free=` | the panic screen renderer works: the message and the register sample are drawn on the framebuffer |
 | 3 | `OSMetaClass: ... IOBlockStorageDevice is a duplicate` | the port built `IOBlockStorageDevice` into the kernel, colliding with the kernelcache's own IOStorageFamily kext |
 | 4 | `"AMFI: No PMGR?y\n" @ConfigurationSettings.cpp:235` | AMFI wanted the PMGR nub that only the owner-root path publishes |
+| 5 | `amfi interface not available @kern_trustcache.c:477` | the kernel's own trust cache runtime demands the AMFI interface, and AMFI was no longer prelinked |
 
-Step 1 is fixed by the device-tree panic region; step 3 by leaving the storage transport out; step 4
-by leaving AMFI and the PMGR out of the prelinked kernel. The next stop is the root mount, where
-`IOKitBSDInit` panics with `Failed to mount root device`
-(`iokit/bsddev/IOKitBSDInit.cpp:921`) because no driver publishes this board's UFS.
+Step 1 is fixed by the device-tree panic region; step 3 by leaving the storage transport out; steps
+4 and 5 by leaving AMFI and the PMGR out of the prelinked kernel and by compiling the trust cache
+runtime out. The next stop is the root mount, where `IOKitBSDInit` panics with
+`Failed to mount root device` (`iokit/bsddev/IOKitBSDInit.cpp:921`) because no driver publishes this
+board's UFS.
 
 The `?y` in the step 4 message is literal text of the kext's message, not a rendering fault: the panic
 screen skips characters below 32 and prints the rest as they are.

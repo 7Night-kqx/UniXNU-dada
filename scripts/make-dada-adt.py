@@ -160,8 +160,9 @@ def main():
                                               '<key>IOPropertyMatch</key><dict><key>UUID</key><string>' +
                                               args.root_match_volume_uuid.upper() + '</string></dict></dict>\0').encode())]
                           if args.root_match_volume_uuid else []),
-                        # Strict policy for the original AMFI: platform code only. This keeps AMFI enforcing.
-                        ('amfi-only-platform-code', struct.pack('<I', 1)),
+                        # No amfi-only-platform-code: that property is read by the original AMFI, and this
+                        # board does not prelink AMFI (see board.toml [kernel.prelink] roots). Without
+                        # AMFI there is no platform-code policy to restrict.
                         *empty_nvram_proxy()],
              [node('memory-map', ([('PackedRAMDisk' if args.packed_data_ramdisk else 'RAMDisk', bytes(16))]
                                   if (args.data_ramdisk or args.packed_data_ramdisk) else []) +

@@ -85,7 +85,9 @@ tool = "kits/NativePrelink/emit_prelink.py"
 kernel = "build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf"
 kernelcache_sha256 = "f18b4df865405f2a287b84977d7aca745e056d656d9fc9df1662970ce2969de7"
 slide = "-0x1000000"
-early_security_init = "com.apple.driver.AppleMobileFileIntegrity=0xfffffff005ab4ae0"
+# No early_security_init on this board: it runs the original AppleMobileFileIntegrity initializer, and
+# AMFI is not prelinked here (see roots). The kernel only calls an early security initializer when the
+# prelink metadata names one, so dropping the entry is enough to keep that path off.
 roots = [
   "com.apple.AppleFSCompression.AppleFSCompressionTypeZlib",
   "com.apple.driver.AppleARMPlatform",
@@ -94,8 +96,12 @@ roots = [
   "com.apple.driver.AppleEffaceableStorage",
   "com.apple.driver.AppleIISController",
   "com.apple.driver.AppleM2ScalerCSCDriver",
-  "com.apple.driver.AppleMobileFileIntegrity",
-  "com.apple.driver.ApplePMGR",
+  # com.apple.driver.AppleMobileFileIntegrity (AMFI) and com.apple.driver.ApplePMGR are NOT prelinked on
+  # this board. AMFI asks the policy manager (PMGR) for every policy decision and panics with
+  # "AMFI: No PMGR" (ConfigurationSettings.cpp:235) when no PMGR publishes its nub; nothing on this
+  # board publishes one, because the PMGR path is the owner-root path and owner-root is out of scope
+  # for this port. Without AMFI the boot continues into the root mount, where the missing storage
+  # driver is what stops it.
   "com.apple.driver.IODARTFamily",
   "com.apple.filesystems.apfs",
   "com.apple.iokit.CoreAnalyticsFamily",

@@ -105,10 +105,17 @@ if component == 'NativeAdreno':
                 '-I', str(ROOT / 'kits/sheng'), '-I', str(ROOT / 'kits/AdrenoFirmware'),
                 '-I', str(ROOT / 'build/sheng-gmu')]
 (out / 'compile-command.json').write_text(json.dumps(command, indent=2) + '\n')
+print('+ ' + ' '.join(command), flush=True)
 result = subprocess.run(command, cwd=record['directory'], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 (out / 'compile.log').write_text(result.stdout)
+# Print the whole compiler output, not its tail. The first diagnostic of a compile is usually the one
+# that explains the failure, and a tail of the last few thousand characters can cut the errors off
+# entirely: the NativeUfs run reported "3 errors generated" while the visible part held only the notes
+# of twelve warnings. build/native-ufs/compile.log is not part of the artifact, so this print is the
+# only place the output survives.
+print(result.stdout, flush=True)
 if result.returncode:
-    raise SystemExit(result.stdout[-3500:])
+    raise SystemExit(f'{component}: compile failed ({result.returncode}); the output above is the whole compiler log')
 data = destination.read_bytes()
 magic, cpu, subtype, kind, count, size = struct.unpack_from('<6I', data)
 if (magic, cpu, subtype, kind) != (0xfeedfacf, 0x100000c, 0, 1):

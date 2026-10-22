@@ -388,6 +388,18 @@ void NativeUfs::adoptAndRead (unsigned level)
   OSSharedPtr<IOMemoryMap> smmuMap;
   uint32_t smmuReport[3] = { 0, 0, 0 };
   write32 (hc, 0x24, 0);            // mask interrupts
+  // HCE (0x34 bit0) gates all request processing. The firmware may hand the
+  // controller over with it clear; UTRLRSR can still read back 1 while nothing
+  // is serviced (probe=4: doorbell stuck at 1, OCS never left 0xf, empty
+  // response UPIU). Re-enable it before touching the request list.
+  uint32_t hceBefore = read32 (hc, 0x34);
+  if (!(hceBefore & 1)) {
+    write32 (hc, 0x34, hceBefore | 1);
+    __asm__ volatile ("dsb sy" ::: "memory");
+    unsigned hceLoops = 10000;
+    while (!(read32 (hc, 0x34) & 1) && hceLoops--) IODelay (10);
+    if (!(read32 (hc, 0x34) & 1)) panic ("NATIVE_UFS adopt: HCE did not set hce=%08x", read32 (hc, 0x34));
+  }
   write32 (hc, 0x60, 0);            // stop the firmware's request list
   __asm__ volatile ("dsb sy" ::: "memory");
   unsigned stopLoops = 10000;
@@ -427,7 +439,7 @@ void NativeUfs::adoptAndRead (unsigned level)
     uint32_t direction = length ? (toHost ? 2U : 1U) : 0U;
     *reinterpret_cast<uint32_t *> (utrd + 0) = 0x10000000U | (direction << 25);
     *reinterpret_cast<uint32_t *> (utrd + 8) = 0x0fU;     // OCS: not completed
-    *reinterpret_cast<uint32_t *> (utrd + 16) = static_cast<uint32_t> (ucdPhys);
+    *reinterpret_cast<uint32_t *> (utrd + 16) = static_cast<uint32_t> (ucdPhys & 0xffffff80U);
     *reinterpret_cast<uint32_t *> (utrd + 20) = static_cast<uint32_t> (ucdPhys >> 32);
     *reinterpret_cast<uint32_t *> (utrd + 24) = (512U >> 2) | ((rspOffset >> 2) << 16);   // response length | offset (dwords)
     uint32_t prdEntries = length ? 1U : 0U;
@@ -487,7 +499,7 @@ void NativeUfs::adoptAndRead (unsigned level)
     uint64_t ucdPhys = phys + ucdOffset;
     *reinterpret_cast<uint32_t *> (utrd + 0) = 0x10000000U;
     *reinterpret_cast<uint32_t *> (utrd + 8) = 0x0fU;
-    *reinterpret_cast<uint32_t *> (utrd + 16) = static_cast<uint32_t> (ucdPhys);
+    *reinterpret_cast<uint32_t *> (utrd + 16) = static_cast<uint32_t> (ucdPhys & 0xffffff80U);
     *reinterpret_cast<uint32_t *> (utrd + 20) = static_cast<uint32_t> (ucdPhys >> 32);
     *reinterpret_cast<uint32_t *> (utrd + 24) = (512U >> 2) | ((rspOffset >> 2) << 16);
     *reinterpret_cast<uint32_t *> (utrd + 28) = (prdtOffset >> 2) << 16;
@@ -532,13 +544,16 @@ void NativeUfs::adoptAndRead (unsigned level)
     uint8_t tur0[6] = { 0, 0, 0, 0, 0, 0 };
     UfsResult t = command (0, tur0, 6, false, 0);
     const uint8_t *rsp0 = virt + ucdOffset + rspOffset;
+    uint32_t dw0 = *reinterpret_cast<volatile uint32_t *> (virt + 0);
     panic ("NATIVE_UFS adopt: TEST UNIT READY lun0\n"
            "ocs=%x resp=%02x scsi=%02x\n"
            "phys=%llx hcs=%08x->%08x smmu idx/bank=%08x cbar=%08x\n"
-           "is=%08x db=%08x rsr=%08x\n"
+           "is=%08x db=%08x rsr=%08x hce=%08x\n"
+           "utrd0=%08x ucd=%08x\n"
            "rsp=%08x %08x",
            t.ocs, t.response, t.scsi, phys, hcsBefore, read32 (hc, 0x30), smmuReport[0], smmuReport[1],
-           read32 (hc, 0x20), read32 (hc, 0x58), read32 (hc, 0x60), getBe32 (rsp0), getBe32 (rsp0 + 4));
+           read32 (hc, 0x20), read32 (hc, 0x58), read32 (hc, 0x60), read32 (hc, 0x34),
+           dw0, static_cast<uint32_t> (phys + ucdOffset), getBe32 (rsp0), getBe32 (rsp0 + 4));
   }
   uint32_t hcsAfter = 0;
   const unsigned maxLun = 6;
@@ -710,7 +725,7 @@ void NativeUfs::dumpFirmwareList (void)
     panic ("NATIVE_UFS dump: list map failed phys=%llx", listPhys);
   }
   const volatile uint32_t *utrd = reinterpret_cast<const volatile uint32_t *> (listMap->getVirtualAddress ());
-  uint64_t ucdPhys = (uint64_t (dumpWord (utrd, 5)) << 32) | dumpWord (utrd, 4);
+  uint64_t ucdPhys = (uint64_t (dumpWord (utrd, 5)) << 32) | (dumpWord (utrd, 4) & 0xffffff80U);
   uint32_t ucd0 = 0, ucd1 = 0, ucd2 = 0, ucd3 = 0;
   if (ucdPhys) {
     IOMemoryDescriptor *ucdDesc = IOMemoryDescriptor::withPhysicalAddress (ucdPhys, 4096, kIODirectionIn);

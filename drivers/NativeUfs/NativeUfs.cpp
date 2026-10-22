@@ -1015,8 +1015,13 @@ static uint32_t be32w (const uint8_t *at)
 }
 
 #include "RootLayout.h"
+#ifdef NATIVE_UFS_BLOCK_DEVICE
+// The window reader and the publication plan belong to the block-device half: their helpers are static
+// functions in a header, so leaving the headers in a build that has no block device makes the
+// compiler report them as unused (-Wunused-function, -Wunneeded-internal-declaration).
 #include "RootWindowRead.h"
 #include "RootPublication.h"
+#endif
 
 }
 

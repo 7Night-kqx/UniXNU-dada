@@ -176,7 +176,6 @@ panic_screen = true                # patch panic() screen output into the payloa
 trust_cache_sha256 = []
 kernel_args = [
   "-v",
-  "serial=3",
   "debug=0x14e",
   "boot-progress=2",
   "armcpu-diagnostics=1",
@@ -189,9 +188,14 @@ tool = "scripts/make-dada-adt.py"
 # A software identity seed for IOPlatformUUID, not an Apple chip id. Distinct from the sheng port so
 # the two boards do not produce the same identity; any nonzero 32-bit value works.
 chip_id = "208"
-# TODO(device): the DarwinBoot contiguous window request. 1 GiB is enough for the console and kernel
-#   stages; the Data ramdisk stage needs a larger window, measured on the phone.
-owned_memory_size = "0x40000000"
+# TODO(device): the DarwinBoot contiguous window request. This is the request the ADT puts into
+#   /chosen/darwinboot-memory-size, and DarwinBoot allocates it as ONE conventional-memory run of
+#   that size (drivers/DarwinBoot .../DarwinBoot.c:390 AllocateWindow). If the firmware's memory map
+#   has no run that large, the loader has no window at all and the boot stops with "NO WINDOW".
+#   256 MiB is the size that was measured to work on this phone (the run the loader picked was at
+#   physical 0xbc007c000); 1 GiB was never observed to be allocatable, so it is not asked for yet.
+#   Raise this only together with a measured conventional run of that size.
+owned_memory_size = "0x10000000"
 # TODO(device): the UUID of the root volume, once the userdata image exists on the phone.
 root_match_volume_uuid = "00000000-0000-0000-0000-000000000000"
 # Stock device tree /cpus reg values: six cores at 0x000..0x500, two at 0x10000 and 0x10100.

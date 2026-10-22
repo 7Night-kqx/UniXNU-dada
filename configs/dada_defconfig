@@ -20,6 +20,15 @@ CONFIG_XNU_NATIVE_PAN=y
 # the serial console without it. Turn it back on (with the whole audited set) once that path exists.
 CONFIG_XNU_BOOT_PROGRESS=n
 
+# The panic log region comes from the device tree, not from a hardcoded address. With this off,
+# pexpert's check_for_panic_log() falls back to PLATFORM_PANIC_LOG_PADDR (0x3c0fc000), which is the
+# QEMU/Raspberry Pi address of the BCM2837 platform file. On this board that address is a hole in
+# DRAM, so the kernel would map it and then clear 16 KiB there before the console exists: the write
+# aborts and the boot hangs with no output. With this on, the region is looked up in the DT; the
+# board has no panic region yet, so the lookup fails and the whole path is skipped (what the sheng
+# reference port does too).
+CONFIG_XNU_DT_PANIC_REGION=y
+
 CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
 
 # Explicitly off for the first boot:

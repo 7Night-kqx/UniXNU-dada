@@ -189,12 +189,13 @@ kernel_args = [
   "debug=0x14e",
   "boot-progress=2",
   "armcpu-diagnostics=1",
-  # The UFS register probe. Level 2 (this boot) mapped the GCC and the controller and dumped their
-  # registers; everything read out sane: GDSC powered, AXI/AHB/UNIPRO/PHY clocks enabled, HC readable,
-  # controller enabled, utrlba=d4bf7000. Level 3 takes the controller over and issues read-only SCSI
-  # commands (INQUIRY / READ(10) on the firmware's request list at utrlba). Nothing is written to the
-  # storage; the controller is not reset and the link is not restarted.
-  "native-ufs-probe=3",
+  # Probe stage 3 (previous boot) mapped the controller and reached the SMMU bypass step: GDSC
+  # powered, AXI/AHB/UNIPRO/PHY clocks enabled, HC readable, controller enabled,
+  # utrlba=d4bf7000. Then smmuBypassStream failed with "unsupported SMMU geometry": SM8750's
+  # apps_smmu ID registers don't match the sheng (SM8550) assumptions this driver was ported from.
+  # Level 7 is read-only: it dumps scr0/idr0/idr1/gfsr and every context bank's SMR/S2CR so we can
+  # see the real geometry and fix the SMMU takeover for SM8750.
+  "native-ufs-probe=7",
   "-no_slto_panic",
   "ml-timeout-lock-panic-scale=40",
 ]

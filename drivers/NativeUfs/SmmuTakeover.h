@@ -36,8 +36,7 @@ static UfsSmmuPlan planUfsSmmuBank(uint16_t stream, uint64_t dma, uint64_t bytes
   uint32_t idr1 = read(0x24);
   unsigned banks = idr1 & 255;
   p.pages = 1U << (((idr1 >> 28) & 7) + 1);
-  if ((idr1 >> 31) || !count || p.pages > 128 || banks < 2 || banks > 128 ||
-      (p.pages + banks) * 4096 > 0xd0000) {
+  if ((idr1 >> 31) || !count || p.pages > 128 || banks < 2 || banks > 128) {
     p.error = "unsupported SMMU geometry"; return p;
   }
   if (count > 128) count = 128; // Firmware's reliably accessible groups only.
@@ -56,11 +55,15 @@ static UfsSmmuPlan planUfsSmmuBank(uint16_t stream, uint64_t dma, uint64_t bytes
     bool ourBank = ((s2cr >> 16) & 3) == 0 && (s2cr & 255) == p.bank;
     if (match) {
       ++matches;
-      if (matches > 1 || mask || !ourBank) {
+      if (matches > 1 || mask) {
         p.slot = i; p.smr = smr; p.s2cr = s2cr;
         p.error = "conflicting UFS stream mapping"; return p;
       }
-      p.reuse = true; p.slot = i;
+      // Stream already mapped (by firmware or an earlier run): reuse it as-is.
+      // Firmware may have placed it on any bank, not necessarily the top one.
+      p.reuse = true;
+      p.slot = i;
+      p.bank = s2cr & 255;
     } else if (ourBank) {
       p.slot = i; p.smr = smr; p.s2cr = s2cr;
       p.error = "reserved context bank already used"; return p;

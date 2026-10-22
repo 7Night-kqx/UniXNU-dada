@@ -96,21 +96,16 @@ roots = [
   "com.apple.driver.AppleEffaceableStorage",
   "com.apple.driver.AppleIISController",
   "com.apple.driver.AppleM2ScalerCSCDriver",
-  # Not prelinked on this board, and not reachable through the dependency closure of what is:
-  #   com.apple.driver.AppleMobileFileIntegrity (AMFI) asks the policy manager for every decision and
-  #     panics with "AMFI: No PMGR" (ConfigurationSettings.cpp:235) when no PMGR has published its nub.
-  #     Nothing here publishes one: the PMGR path is the owner-root path, and owner-root is out of
-  #     scope for this port.
-  #   com.apple.driver.ApplePMGR is the policy manager itself; it only ever came in as a dependency of
-  #     AMFI.
-  #   com.apple.iokit.IOGPUFamily, com.apple.iokit.IOMobileGraphicsFamily, com.apple.iokit.IOHIDFamily
-  #     and com.apple.security.sandbox declare AMFI as an OSBundleLibraries dependency, so leaving them
-  #     in the roots would pull AMFI back in and the panic would come back. They are the GPU, the
-  #     display accelerator, the input stack and the sandbox: none of them is needed for the video
-  #     console (the console is XNU's own pexpert console, drawn straight into the framebuffer).
-  #   com.apple.iokit.IOHIDEventDriver is codeless and only exists for IOHIDFamily.
-  # Without AMFI the boot continues past the kext starts into the root mount, where the missing storage
-  # driver is what stops it.
+  # com.apple.driver.AppleMobileFileIntegrity (AMFI) is NOT prelinked on this board, and neither is
+  # anything that depends on it. Two panics come from this:
+  #   with AMFI prelinked, AMFI itself panics with "AMFI: No PMGR" (ConfigurationSettings.cpp:235)
+  #     when no PMGR has published its nub -- nothing here publishes one, because the PMGR path is the
+  #     owner-root path, and owner-root is out of scope for this port;
+  #   without AMFI, the kernel's trust cache runtime panics with "amfi interface not available"
+  #     (bsd/kern/kern_trustcache.c), so that runtime is compiled out (XNU_TRUST_CACHE_RUNTIME=n in
+  #     the defconfig).
+  # AMFI's OSBundleLibraries dependency on com.apple.driver.ApplePMGR is not needed either: with AMFI
+  # gone, nothing pulls the PMGR in.
   "com.apple.driver.IODARTFamily",
   "com.apple.filesystems.apfs",
   "com.apple.iokit.CoreAnalyticsFamily",

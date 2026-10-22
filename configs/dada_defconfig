@@ -23,7 +23,13 @@ CONFIG_XNU_ARMCPU=y
 # media, and IOKitBSDInit panics with "Failed to mount root device".
 CONFIG_XNU_NATIVE_UFS=n
 CONFIG_XNU_NATIVE_AES=y
-CONFIG_XNU_TRUST_CACHE_RUNTIME=y
+# The trust cache runtime is off. The port patch native-trust-cache-runtime.patch compiles
+# trust_cache_runtime_init() into the boot only when XNU_NATIVE_TRUST_CACHE is 1, and that function
+# panics with "amfi interface not available" (bsd/kern/kern_trustcache.c) when no AMFI has published
+# its interface. This board prelinks no AMFI (see board.toml [kernel.prelink] roots: the AMFI path is
+# the owner-root path, which needs storage first), so the runtime is left out; the static trust cache
+# is not loaded either, which is no loss: the ADT carries an empty TrustCache node anyway.
+CONFIG_XNU_TRUST_CACHE_RUNTIME=n
 CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
 CONFIG_XNU_NATIVE_ARCH_TIMER=y
 CONFIG_XNU_NATIVE_PAN=y

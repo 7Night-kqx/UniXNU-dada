@@ -175,6 +175,11 @@ def emitted_defines(root, directory):
     return set(re.findall(r'-DNATIVE_VERIFIED_BLOCK[\w]*(?:=\d+)?', record.read_text()))
 
 
+def emitted_command(root, directory):
+    record = root / 'build' / directory / 'compile-command.json'
+    return record.read_text() if record.is_file() else ''
+
+
 def check_verified_mode(builder):
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
@@ -186,6 +191,13 @@ def check_verified_mode(builder):
         check(not defines, f'NativeUfs without --verified-root defines no verified block macro (got {sorted(defines)})')
         check(not (root / 'build/native-virtio-block-verified').exists(),
               'NativeUfs keeps its own output directory (build/native-ufs)')
+        # NativeUfs includes <IOKit/storage/IOBlockStorageDevice.h>, which the xnu headers do not carry: the
+        # build tree stages the public IOStorageFamily headers in build/storage-abi/include (the base
+        # scripts/unixnu/kernel.py does it before the archive builders) and the command line must point there.
+        storage = str(root / 'build/storage-abi/include')
+        command = json.loads(emitted_command(root, 'native-ufs'))
+        check(any(a == '-I' and b == storage for a, b in zip(command, command[1:])),
+              'NativeUfs compiles with the staged IOStorageFamily include directory')
 
         result = run_builder(root, 'NativeUfs', '--verified-root')
         defines = emitted_defines(root, 'native-ufs')

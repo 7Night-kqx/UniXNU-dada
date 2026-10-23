@@ -17,6 +17,8 @@ static bool ufsBuildRootPlan (const char *const *names, unsigned count, UfsRootP
   plan.order[0] = system;
   unsigned position = 1;
   for (unsigned i = 0; i < count; ++i) if (i != system && i != os) plan.order[position++] = i;
+  // `position` is count-1 here, and count <= 4, so the OS window always has a slot: with two windows
+  // position is 1 and the OS goes to order[1]; with four it is 3 and the OS goes to order[3].
   plan.order[position] = os;
   plan.count = count;
   return true;

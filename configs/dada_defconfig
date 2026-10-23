@@ -8,31 +8,29 @@ CONFIG_XNU_SOURCE_CORECRYPTO14=y
 CONFIG_XNU_SOURCE_PTHREAD=y
 CONFIG_XNU_ARM_DT_PLATFORM=y
 CONFIG_XNU_ARMCPU=y
-# The storage transport is on for this board, but in probe-only mode.
+# The storage transport is on, with its block-device half.
 #
-# The NativeUfs in this tree is the sheng (SM8550) driver. What SM8750 needs of it is now done: the
+# The NativeUfs in this tree is the sheng (SM8550) driver. What SM8750 needs of it is done: the
 # compatible match covers "qcom,ufshc" (the stock dada tree) as well as the SoC-qualified names, and
-# the nine GCC clock offsets are the SM8750 ones (docs/ufs-sm8750.md has the table and its source).
+# the nine GCC clock offsets are the SM8750 ones (docs/ufs-sm8750.md has the table and its source),
+# and reading a full GPT through the adopted controller works (native-ufs-probe=9).
 #
-# The transport cannot publish a block device yet: a transport derives from IOBlockStorageDevice, and
-# that class is not in the xnu tree, so the port compiles it from Apple's IOStorageFamily source and
-# links it into the kernel. The kernelcache's own com.apple.iokit.IOStorageFamily kext defines the
-# same class name, and OSMetaClass panics on the collision:
+# The block-device half derives from IOBlockStorageDevice, which is not in the xnu tree but is a
+# class of Apple's separate IOStorageFamily project -- and the kernelcache already carries
+# com.apple.iokit.IOStorageFamily. Compiling that base class in would register a second class of the
+# same name and OSMetaClass would panic:
 #   "OSMetaClass: Kext com.apple.iokit.IOStorageFamily class IOBlockStorageDevice is a duplicate;
 #    kext __kernel__ already has a class by that name." (libkern/c++/OSMetaClass.cpp:894)
 # The prelinked kext cannot be dropped instead: com.apple.driver.AppleARMPlatform and
 # com.apple.filesystems.apfs both depend on it, so the prelink closure pulls it back in.
 #
-# So the transport is built without its block-device half (XNU_NATIVE_UFS_PROBE_ONLY): the driver
-# links against no IOStorageFamily symbol, the base class stays out of the kernel, the prelinked
-# kext registers cleanly, and the driver can still do what a probe can: map the controller, dump
-# the registers, take over the controller the firmware left up and issue read-only commands
-# (native-ufs-probe=1..13 in board.toml [kernel] kernel_args).
-#
-# The probe also tells whether the link is really up: the phone's own UEFI (Mu-Silicium) drives this
-# UFS before DarwinBoot runs, so the controller and the PHY are expected to be up already.
+# So the transport keeps its block-device half and the base class is NOT compiled in. The archives of
+# board.toml [kernel] build the pinned IOBlockStorageDevice reference object (for its 190-slot
+# dispatch shape) and then run scripts/build-storage-kext-bindings.py, which rebinds the transport's
+# IOBlockStorageDevice imports to the addresses the prelinked kext itself uses. Exactly one class of
+# that name exists at run time, so OSMetaClass has nothing to refuse.
 CONFIG_XNU_NATIVE_UFS=y
-CONFIG_XNU_NATIVE_UFS_PROBE_ONLY=y
+CONFIG_XNU_NATIVE_UFS_PROBE_ONLY=n
 CONFIG_XNU_NATIVE_AES=y
 # The trust cache runtime is off. The port patch native-trust-cache-runtime.patch compiles
 # trust_cache_runtime_init() into the boot only when XNU_NATIVE_TRUST_CACHE is 1, and that function

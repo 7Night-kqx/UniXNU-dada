@@ -1143,6 +1143,12 @@ static uint32_t be32w (const uint8_t *at)
   return (uint32_t (at[0]) << 24) | (uint32_t (at[1]) << 16) | (uint32_t (at[2]) << 8) | at[3];
 }
 
+// The GPT partition that carries the root image and its manifest. The sheng port keeps it in
+// "userdata"; this port has a dedicated partition for it, so the root image never shares a partition
+// with anything the phone flashes or formats. One name, one place: the boot argument below only
+// chooses whether the root is published, never where it lives.
+static const char kRootPartition[] = "linux";
+
 #include "RootLayout.h"
 #ifdef NATIVE_UFS_BLOCK_DEVICE
 // The window reader and the publication plan belong to the block-device half: their helpers are static
@@ -1712,6 +1718,7 @@ static char gPendingUuid[4][37];
 static UfsRootPlan gPublicationPlan;
 static NativeUfs *gPendingProvider;
 
+#if defined(NATIVE_VERIFIED_BLOCK) && NATIVE_VERIFIED_BLOCK
 static bool mediaWithUuidExists (const char *uuid, NativeUfsBlock *window)
 {
   OSDictionary *matching = IOService::serviceMatching ("IOMedia");
@@ -1741,9 +1748,39 @@ static bool mediaWithUuidExists (const char *uuid, NativeUfsBlock *window)
   return found;
 }
 
+// Ready when any medium's provider chain reaches this window, ignoring the UUID. This is the unsigned
+// publication's readiness test: the UUIDs the verified path matches on come from signed policies, and a
+// build without owner trust has none. The window's own IOMedia is proof that IOBlockStorageDriver,
+// IOGUIDPartitionScheme and APFS have picked the device up.
+#if !defined(NATIVE_VERIFIED_BLOCK) || !NATIVE_VERIFIED_BLOCK
+static bool mediaUnderWindow (NativeUfsBlock *window)
+{
+  bool found = false;
+  OSDictionary *matching = IOService::serviceMatching ("IOMedia");
+  if (matching) {
+    OSIterator *iterator = IOService::getMatchingServices (matching);
+    if (iterator) {
+      for (unsigned seen = 0; seen < 64 && !found; ++seen) {
+        IORegistryEntry *media = OSDynamicCast (IORegistryEntry, iterator->getNextObject ());
+        if (!media) break;
+        IORegistryIterator *parents = IORegistryIterator::iterateOver (
+          media, gIOServicePlane, kIORegistryIterateRecursively | kIORegistryIterateParents);
+        if (parents) {
+          found = ufsMediaHasAncestor (*parents, window);
+          parents->release ();
+        }
+      }
+      iterator->release ();
+    }
+    matching->release ();
+  }
+  return found;
+}
+#endif // !NATIVE_VERIFIED_BLOCK
+
 static void captureMissingMedia (const char *uuid)
 {
-  int used = snprintf (gRootMediaText, sizeof (gRootMediaText), "Waiting for signed UUID %s\n", uuid);
+  int used = snprintf (gRootMediaText, sizeof (gRootMediaText), uuid[0] ? "Waiting for signed UUID %s\n" : "Media not ready\n", uuid);
   OSDictionary *matching = IOService::serviceMatching ("IOMedia");
   OSIterator *iterator = matching ? IOService::getMatchingServices (matching) : nullptr;
   unsigned count = 0;
@@ -1790,18 +1827,36 @@ static void publishThread (void *, wait_result_t)
     bool wait (unsigned index) {
       NativeUfsBlock *device = gPendingDevice[index];
       const char *uuid = gPendingUuid[index];
+      // 300 x 100 ms is what the verified path waits for a signed volume to appear. APFS needs the same
+      // order of magnitude on its own, and the windows are already started at this point.
+      const unsigned gateTicks = 300;
       gRootDiagnostic.stage = "media publication";
       gRootDiagnostic.publicationPhase = static_cast<unsigned> (UfsRootPhase::Media);
       gRootDiagnostic.publicationWindow = index;
       bool ready = false;
       // Diagnostic mode affects reporting only, never the dependency gate.
-      for (unsigned tick = 0; tick <= 300; ++tick) {
+      for (unsigned tick = 0; tick <= gateTicks; ++tick) {
+#if defined(NATIVE_VERIFIED_BLOCK) && NATIVE_VERIFIED_BLOCK
         ready = mediaWithUuidExists (uuid, device);
-        if (ready || tick == 300) break;
+#else
+        // No signed policy names a volume UUID, so readiness is the window's own media existing.
+        ready = mediaUnderWindow (device);
+#endif
+        if (ready || tick == gateTicks) break;
         IOSleep (100);
       }
-      IOLog ("NativeUfs: %s volume %s %s\n", device->windowLabel (), uuid, ready ? "ready" : "not ready");
-      if (!ready) captureMissingMedia (uuid);
+      if (uuid[0]) {
+        IOLog ("NativeUfs: %s volume %s %s\n", device->windowLabel (), uuid, ready ? "ready" : "not ready");
+      } else {
+        IOLog ("NativeUfs: %s media %s\n", device->windowLabel (), ready ? "ready" : "not ready");
+      }
+      if (!ready && uuid[0]) {
+        captureMissingMedia (uuid);
+      } else if (!ready) {
+        // Unsigned publication: say which media did appear, so a boot log shows how far the stack got.
+        gRootMediaText[0] = 0;
+        captureMissingMedia (uuid);
+      }
       return ready;
     }
     void discard (unsigned index) { discardPendingWindow (index); }
@@ -1809,9 +1864,12 @@ static void publishThread (void *, wait_result_t)
   UfsRootPublicationResult result = ufsPublishRootWindows (operations, gPublicationPlan);
   if (result.phase != UfsRootPhase::Complete) {
     gRootDiagnostic.result = result.phase == UfsRootPhase::Start ? kIOReturnIOError : kIOReturnTimeout;
+    // A failed media wait dereferences the window it stopped on, so the label is only read when the
+    // window is still there. Start failures have already released theirs.
+    const char *label = result.phase == UfsRootPhase::Start ? "" :
+      (gPendingDevice[result.index] ? gPendingDevice[result.index]->windowLabel () : "");
     const char *reason = result.phase == UfsRootPhase::Start ? "root window service start failed" :
-      (!strcmp (gPendingDevice[result.index]->windowLabel (), "SystemOS") ?
-       "SystemOS signed volume not found" : "signed root window volume not found");
+      (!strcmp (label, "SystemOS") ? "SystemOS volume not found" : "root window volume not found");
     IOLog ("NativeUfs: root publisher stopped at window %u; published=%u\n", result.index, result.published);
     // Start failures have already released their unpublished object; do not
     // dereference it here. The media-failure object is deliberately retained.
@@ -1933,7 +1991,7 @@ bool NativeUfs::start (IOService *provider)
       panic ("NATIVE_UFS root check: bring-up failed: %s", why);
     }
     RootLayout *layout = static_cast<RootLayout *> (IOMalloc (sizeof (RootLayout)));
-    if (!layout || !findRootLayout (layout, &why)) {
+    if (!layout || !findRootLayout (layout, kRootPartition, &why)) {
       panic ("NATIVE_UFS root check: %s", why);
     }
     panic ("NATIVE_UFS root check\n"
@@ -1951,7 +2009,7 @@ bool NativeUfs::start (IOService *provider)
       panic ("NATIVE_UFS root windows: bring-up failed: %s", why);
     }
     RootLayout *layout = static_cast<RootLayout *> (IOMalloc (sizeof (RootLayout)));
-    if (!layout || !findRootLayout (layout, &why)) {
+    if (!layout || !findRootLayout (layout, kRootPartition, &why)) {
       panic ("NATIVE_UFS root windows: %s", why);
     }
     uint32_t sig[4][2] = {};
@@ -2015,8 +2073,6 @@ bool NativeUfs::start (IOService *provider)
   }
   return false;
 }
-
-#ifdef NATIVE_UFS_BLOCK_DEVICE
 // Boot the root image's windows as block devices. Soft-fails (logs, publishes nothing).
 bool NativeUfs::startRoot (IOService *provider)
 {
@@ -2029,7 +2085,7 @@ bool NativeUfs::startRoot (IOService *provider)
   }
   native_ufs_root_step = 2;
   RootLayout *layout = static_cast<RootLayout *> (IOMalloc (sizeof (RootLayout)));
-  if (!layout || !findRootLayout (layout, &why)) {
+  if (!layout || !findRootLayout (layout, kRootPartition, &why)) {
     rootDiagnosticFailure (layout ? why : "root layout allocation failed");
     IOLog ("NativeUfs: root layout failed: %s\n", why);
     if (layout) IOFree (layout, sizeof (RootLayout));
@@ -2038,8 +2094,8 @@ bool NativeUfs::startRoot (IOService *provider)
   native_ufs_root_step = 3;
   if (layout->manifestStatus != 0) {
     rootDiagnosticFailure ("root manifest rejected");
-    IOLog ("NativeUfs: no valid root manifest in userdata (status %u, magic %08x %08x)\n",
-           layout->manifestStatus, layout->magic0, layout->magic1);
+    IOLog ("NativeUfs: no valid root manifest in %s (status %u, magic %08x %08x)\n",
+           kRootPartition, layout->manifestStatus, layout->magic0, layout->magic1);
     IOFree (layout, sizeof (RootLayout));
     return false;
   }
@@ -2093,7 +2149,17 @@ bool NativeUfs::startRoot (IOService *provider)
       }
       return true;
 #else
-      return false; // Root publication requires owner verification in every build.
+      // No owner trust is compiled in, so there is no signed policy to derive a volume UUID from, and
+      // gPendingUuid stays empty. What this build can still check is what startRoot() itself arranged:
+      // every window the plan named was prepared and attached. Readiness of the media each window
+      // produces is decided by wait(), after start(); the root volume is then chosen by the kernel's
+      // own /chosen/root-matching UUID, exactly as it is on the verified path.
+      gRootDiagnostic.stage = "unsigned window set";
+      for (unsigned i = 0; i < gPending; ++i) {
+        if (!gPendingDevice[i] || !gPendingAttached[i]) return false;
+        gPendingUuid[i][0] = 0;
+      }
+      return gPending == layout->windows;
 #endif
     }
     bool schedule () {

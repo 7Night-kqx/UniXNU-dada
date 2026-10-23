@@ -49,17 +49,23 @@ ARCHIVES = {
 failures = []
 passes = []
 
-# (switch, builder the switch requires, archive the kernel script must link, switch that makes it
-# unnecessary)
+# (switch, builders the switch requires together, archive the kernel script links, switch that makes
+# them unnecessary)
 #
-# The probe-only transport (XNU_NATIVE_UFS_PROBE_ONLY) is the exception: it has no block-device half and
-# references no IOStorageFamily symbol, so the base class must stay out of the kernel. The kernelcache's
-# own com.apple.iokit.IOStorageFamily kext defines the same class name, and OSMetaClass panics on the
-# second registration ("class IOBlockStorageDevice is a duplicate; kext __kernel__ already has a class by
-# that name").
+# The storage transport derives from IOBlockStorageDevice, a class of Apple's separate IOStorageFamily
+# project that the kernelcache already carries as com.apple.iokit.IOStorageFamily. The base class must
+# NOT be compiled and linked: a second class of that name makes OSMetaClass panic ("class
+# IOBlockStorageDevice is a duplicate; kext __kernel__ already has a class by that name").
+#
+# So the transport needs two things instead of a linked base class:
+#   - build-storage-classes.py compiles the pinned reference object, which names the 190 dispatch slots;
+#   - build-storage-kext-bindings.py rebinds the transport's imports to the prelinked kext's own
+#     addresses, and rebuilds libNativeUfs.a around the bound object.
+# Neither is needed in probe-only mode, where the transport has no block-device half at all.
 REQUIRED_TOGETHER = (
-    ('XNU_NATIVE_UFS', ('build-storage-classes.py', None), 'build/storage-classes/libStorageClasses.a',
-     'XNU_NATIVE_UFS_PROBE_ONLY'),
+    ('XNU_NATIVE_UFS', (('build-storage-classes.py', None),
+                        ('build-storage-kext-bindings.py', None)),
+     'build/native-ufs/libNativeUfs.a', 'XNU_NATIVE_UFS_PROBE_ONLY'),
 )
 
 
@@ -108,13 +114,14 @@ def check_archives(device, tree):
     # xnu tree, so a kernel that links a transport needs the base class compiled and linked before it --
     # otherwise the link stops with "vtable for IOBlockStorageDevice" undefined. A builder listed here must
     # be present exactly when its switch is on, and the kernel script must read that archive.
-    for switch, builder, archive, *off in REQUIRED_TOGETHER:
+    for switch, builders, archive, *off in REQUIRED_TOGETHER:
         needed = switches.get(switch, 'n') == 'y'
         if off and switches.get(off[0], 'n') == 'y':
             needed = False
-        check((builder in listed) == needed,
-              f'{switch}={"y" if needed else "n"} lists {builder[0]} {"and" if needed else "only when it does not"} '
-              f'needs it')
+        for builder in builders:
+            check((builder in listed) == needed,
+                  f'{switch}={"y" if needed else "n"} lists {builder[0]} {"and" if needed else "only when it does not"} '
+                  f'needs it')
         if needed and script:
             check(archive in script, f'{switch}=y links {archive}')
 
@@ -322,6 +329,38 @@ def check_verified_symbols(device):
                   f'but used outside it: lines {uses}')
 
 
+def check_binding_slide(device):
+    """The storage bindings must take the prelink slide, and must only move the kext's own addresses.
+
+    build-storage-kext-bindings.py reads the original kernelcache, but the transport is linked into the
+    kernel that emit_prelink.py has already rebased: it moves every component segment to "original va +
+    slide". A `.set` of a kext-owned slot is an absolute address, so it has to move by that slide too, or
+    every call lands 0x1000000 below the real function. Kernel exports must not move: prelink resolves
+    those against the newly built kernel, so this image only supplies the name.
+
+    These are source properties (no kernelcache and no Xcode needed), which is why they can be checked here.
+    """
+    script = device.parent / 'UniXNU/scripts/build-storage-kext-bindings.py'
+    if not script.is_file():
+        # A checkout that only has the device repository: the base tree is not next to it.
+        return
+    text = script.read_text()
+    check("'--slide'" in text or '--slide' in text,
+          'build-storage-kext-bindings.py accepts the prelink slide')
+    check("UNIXNU_PRELINK_SLIDE" in text,
+          'build-storage-kext-bindings.py falls back to UNIXNU_PRELINK_SLIDE from the kernel step')
+    check('inside_kext' in text,
+          'build-storage-kext-bindings.py decides by "inside the kext", not by export-table membership')
+    # The assembly is written from `bound` only; if the kernel-export slots leaked into it they would be
+    # pinned to the original image's layout.
+    check(".set {name}, {address:#x}" in text and 'for name, address in sorted(bound.items())' in text,
+          'build-storage-kext-bindings.py writes .set only for kext-owned slots')
+    kernel = device.parent / 'UniXNU/scripts/unixnu/kernel.py'
+    if kernel.is_file():
+        check('UNIXNU_PRELINK_SLIDE' in kernel.read_text(),
+              'the kernel step hands the board prelink slide to the bindings builder')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--device', type=Path, help='device repository (default: the one this script is in)')
@@ -355,6 +394,7 @@ def main():
     check_products(device, builder)
     check_verified_mode(builder)
     check_verified_symbols(device)
+    check_binding_slide(device)
     return report()
 
 

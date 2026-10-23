@@ -21,7 +21,7 @@ static unsigned selected;
 extern "C" {
 uint32_t ufs_path_layout() {
   const char *why=nullptr;
-  return findRootLayout(&layout,&why) ? layout.manifestStatus : 0x100;
+  return findRootLayout(&layout,"userdata",&why) ? layout.manifestStatus : 0x100;
 }
 uint64_t ufs_path_window(unsigned index,unsigned field) {
   if(index>=layout.windows) return 0;

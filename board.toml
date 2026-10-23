@@ -29,12 +29,21 @@ fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustC
 "044-76040-038.dmg" = "3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d"
 "044-76034-038.dmg" = "b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f"
 
-# The raw image for the userdata partition: the OS and SystemOS disk images of the IPSW behind a manifest.
-# first_lba/last_lba are the GPT entry "userdata" of LUN 0 as measured on the phone
-# (sgdisk --print /dev/block/sda; logical block 4096, partition 34, 372.53 GiB).
 [userdata]
-first_lba = 3124736                # 0x2FAE00
-last_lba = 100781311               # 0x601CCFF
+# The raw image for the root partition: the OS and SystemOS disk images of the IPSW behind a manifest.
+#
+# This is the sheng root model, unchanged: 0x000000 is a 4096-byte SHNGROOT manifest, then each window is
+# one attached dmg copied byte for byte (drivers/NativeUfs/RootLayout.h reads it back). The difference from
+# sheng is only where the image lives: sheng puts it in "userdata" and gives up the rest of that partition,
+# while this port has a partition of its own, "linux", so the root image never shares space with anything
+# the phone flashes or formats.
+#
+# first_lba/last_lba are the GPT entry "linux" of LUN 0 as measured on the phone. /sys/class/block/sda36
+# reports start=808593408, size=195313664 in 512-byte sectors, and this table is in 4096-byte LBAs:
+# 808593408 * 512 / 4096 = 101074176, and the last byte of the partition is LBA 125488383.
+partition = "linux"
+first_lba = 101074176              # 0x06064500
+last_lba = 125488383               # 0x077ACCFF
 lba_bytes = 4096
 windows = [
   { name = "OS", component = "OS" },
@@ -77,7 +86,14 @@ archives = [
   "build-arm-driver.py NativeAES",
   "build-native-aes-bindings.py",
   "build-libpthread-kernel.py",
-  "build-arm-driver.py NativeUfs --probe-only",
+  # The transport derives from IOBlockStorageDevice, which the kernelcache already carries as
+  # com.apple.iokit.IOStorageFamily. build-storage-classes.py compiles the pinned reference object
+  # (the 190-slot dispatch shape), never a linked base class; build-storage-kext-bindings.py reads
+  # that shape and the kernelcache, and rebinds the transport's imports to the kext's own addresses.
+  # Linking a compiled base class instead would register a duplicate class and panic.
+  "build-storage-classes.py",
+  "build-arm-driver.py NativeUfs",
+  "build-storage-kext-bindings.py --component NativeUfs",
 ]
 
 [kernel.prelink]
@@ -196,7 +212,14 @@ kernel_args = [
   # Level 3 now: adopt the controller, program the SMMU bypass (stream 0x60 -> bank 1),
   # replace the request list at utrlba=d4bf7000 and ring the doorbell. Nothing is written
   # to the storage.
-  "native-ufs-probe=9",
+  #
+  # Stage 9 (the previous boot) read the whole GPT through that adopted controller, so the
+  # transport path is proven. The root is now the sheng model: the "linux" partition carries a
+  # SHNGROOT manifest and the IPSW's two disk images, NativeUfs publishes them as two read-only
+  # windows, and the kernel picks the root volume by UUID. There is no owner-signed policy in this
+  # build, so startRoot() publishes on window readiness alone -- see the validate()/wait() branches
+  # in drivers/NativeUfs/NativeUfs.cpp.
+  "native-ufs-root=1",
   "-no_slto_panic",
   "ml-timeout-lock-panic-scale=40",
 ]
@@ -214,8 +237,13 @@ chip_id = "208"
 #   physical 0xbc007c000); 1 GiB was never observed to be allocatable, so it is not asked for yet.
 #   Raise this only together with a measured conventional run of that size.
 owned_memory_size = "0x10000000"
-# TODO(device): the UUID of the root volume, once the userdata image exists on the phone.
-root_match_volume_uuid = "00000000-0000-0000-0000-000000000000"
+# The UUID of the root volume: /chosen/root-matching makes the kernel pick the IOMedia with this UUID.
+# Read out of the decoded OS image itself, not copied from the sheng port: the APSB volume superblock at
+# offset 0x3e1c400 of 044-76040-038.dmg carries this UUID at its 0xF0 field, and the same bytes are what
+# now sit in the "linux" partition (verified by reading the partition back from the phone). The manifest
+# and both windows were also checked against the constraints in drivers/NativeUfs/RootLayout.h.
+# scripts/check-dada.py refuses the all-zero placeholder: the kernel would then never mount a root.
+root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
 # Stock device tree /cpus reg values: six cores at 0x000..0x500, two at 0x10000 and 0x10100.
 cpu_regs = "0,0x100,0x200,0x300,0x400,0x500,0x10000,0x10100"
 psci_method = "smc"

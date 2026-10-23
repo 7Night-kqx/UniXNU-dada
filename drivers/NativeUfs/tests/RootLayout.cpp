@@ -49,7 +49,7 @@ static void fixture() {
 }
 static void expect(const std::function<void()> &change,bool gpt,uint32_t status,bool rehash=true) {
   fixture();change();if(rehash)checksums();RootLayout layout;const char *why=nullptr;
-  bool result=findRootLayout(&layout,&why);
+  bool result=findRootLayout(&layout,"userdata",&why);
   assert(result==gpt);if(gpt)assert(layout.manifestStatus==status);
   if(!result || status)assert(layout.windows==0);
 }
@@ -90,7 +90,7 @@ int main(int argc,char **argv) {
   // Bounded mutation pass checks parser memory safety, not semantic correctness.
   for(unsigned i=0;i<2048;++i) {
     fixture(); unsigned at=(i*313)%4064;manifest[at]^=uint8_t(1+(i%255));checksums();
-    RootLayout layout;const char *why=nullptr;(void)findRootLayout(&layout,&why);
+    RootLayout layout;const char *why=nullptr;(void)findRootLayout(&layout,"userdata",&why);
   }
   if(argc==2) {
     fixture();std::ifstream f(argv[1],std::ios::binary);f.read(reinterpret_cast<char *>(manifest),4096);assert(f.gcount()==4096);
@@ -99,7 +99,7 @@ int main(int argc,char **argv) {
     // Only the synthetic GPT is rechecksummed. Preserve the actual on-host manifest hash.
     put32(header+88,rootCrc32(entries,4096));put32(header+16,rootCrc32(header,92,true));
     RootLayout layout;const char *why=nullptr;
-    assert(findRootLayout(&layout,&why) && layout.manifestStatus==0 && layout.windows==2);
+    assert(findRootLayout(&layout,"userdata",&why) && layout.manifestStatus==0 && layout.windows==2);
     printf("PASS: existing root image's 4096-byte manifest, OS=%llu SystemOS=%llu; synthetic GPT uses recorded geometry, no full-image rehash\n",
            (unsigned long long)layout.window[0].size,(unsigned long long)layout.window[1].size);
   }

@@ -54,9 +54,13 @@ static bool rootEntryUsed (const uint8_t *entry)
   return used != 0;
 }
 
-// Find the partition named "userdata" in LUN 0's primary GPT (4096-byte sectors), then read the
-// manifest at its first block. Read-only. Returns false only if the GPT itself is unusable.
-static bool findRootLayout (RootLayout *layout, const char **why)
+// Find the named partition in LUN 0's primary GPT (4096-byte sectors), then read the manifest at its
+// first block. Read-only. Returns false only if the GPT itself is unusable.
+//
+// `wanted` is the partition the root image was flashed to. The sheng port uses "userdata"; a port whose
+// root image lives in its own partition (dada: "linux") passes that name instead. The layout is the same
+// either way, so nothing below this point has to know which one was chosen.
+static bool findRootLayout (RootLayout *layout, const char *wanted, const char **why)
 {
   gRootDiagnostic.stage = "GPT header";
   bzero (layout, sizeof (*layout));
@@ -103,7 +107,9 @@ static bool findRootLayout (RootLayout *layout, const char **why)
     *why = "GPT entries CRC";
     return false;
   }
-  static const char wanted[] = "userdata";
+  // The GPT name is 36 UTF-16LE code units. Only ASCII names are matched: the high byte must be zero
+  // in every code unit the wanted name covers, and the code unit after it must be the terminator.
+  size_t wantedLength = strlen (wanted);
   bool found = false;
   for (uint32_t index = 0; index < count; index++) {
     const uint8_t *entry = gScratch + index * 128;
@@ -120,16 +126,18 @@ static bool findRootLayout (RootLayout *layout, const char **why)
         return false;
       }
     }
-    bool match = true;
-    for (unsigned c = 0; c < sizeof (wanted); c++) {
-      if (entry[56 + 2 * c] != static_cast<uint8_t> (wanted[c]) || entry[57 + 2 * c] != 0) {
-        match = false;
-        break;
-      }
+    // Compare the whole name: the wanted string, then the UTF-16 terminator. A name that merely starts
+    // with the wanted one ("linux2") must not match.
+    bool match = wantedLength && wantedLength < 36;
+    for (size_t c = 0; match && c < wantedLength; c++) {
+      match = entry[56 + 2 * c] == static_cast<uint8_t> (wanted[c]) && entry[57 + 2 * c] == 0;
+    }
+    if (match) {
+      match = entry[56 + 2 * wantedLength] == 0 && entry[57 + 2 * wantedLength] == 0;
     }
     if (match) {
       if (found) {
-        *why = "duplicate userdata partition";
+        *why = "duplicate root partition";
         return false;
       }
       layout->userdataFirst = le64 (entry + 32);
@@ -138,7 +146,7 @@ static bool findRootLayout (RootLayout *layout, const char **why)
     }
   }
   if (!found || layout->userdataLast < layout->userdataFirst) {
-    *why = "no userdata partition";
+    *why = "no root partition";
     return false;
   }
   gRootDiagnostic.first = layout->userdataFirst;

@@ -513,6 +513,17 @@ void NativeUfs::adoptAndRead (unsigned level)
     if (out) *out = read32 (hc, 0x9c);
     return arg2 & 0xff;                       // 0 is success
   };
+  // The controller does not start servicing the UTP transfer list until it has
+  // completed at least one UIC command after taking over from the firmware.
+  // Probe 9 proved it: with no UIC traffic the doorbell sticks at 1 forever and
+  // IS stays zero, while the same TEST UNIT READY completed in three polls
+  // right after a DME_GET + DME_HIBERNATE_EXIT sequence -- and PA_PWR_MODE read
+  // 0x11 (FAST_MODE), so the link was never hibernating. The wake-up was not
+  // what helped; touching the UIC path was. Prime it before the first request.
+  uint32_t uicPwr = 0, uicPwrStatus = 0, uicLanes = 0, uicLanesStatus = 0, uicExit = 0;
+  uicPwrStatus = uic (0x01, 0x1571, 0, &uicPwr);       // DME_GET PA_PWR_MODE
+  uicLanesStatus = uic (0x01, 0x1560, 0, &uicLanes);   // DME_GET PA_ActiveTxDataLanes
+  uicExit = uic (0x18, 0, 0, nullptr);                 // DME_HIBERNATE_EXIT
   // NOP OUT (kind 0) and Query read requests (kind 1: opcode 0x05 READ FLAG, 0x03 READ ATTRIBUTE).
   // Read-only: no data segment, no state change on the device. Returns the UPIU response byte and
   // the 32-bit value field (attributes) or flag byte via *value; ocs 0xf means no completion.
@@ -570,25 +581,15 @@ void NativeUfs::adoptAndRead (unsigned level)
   uint32_t powerBefore = 0, powerAfter = 0, queryResp = 0, ignoredValue = 0;
   uint32_t wakeStatus = 0xee;
   if (level == 5) {
-    // The doorbell sticks with IS zero, no UIC error and a clean SMMU, while
-    // HCS.UPMCRS reads 1. That is the link sitting in Hibernate: the controller
-    // never gets the UPIU out, so the request never completes and nothing is
-    // ever reported. Prove it with DME_GET on PA_PWR_MODE (0x1571), leave
-    // Hibernate with DME_HIBERNATE_EXIT (0x18), then retry the same TUR.
-    uint32_t pwrMode = 0, pwrStatus = 0, txLanes = 0, txStatus = 0;
-    pwrStatus = uic (0x01, 0x1571, 0, &pwrMode);       // DME_GET PA_PWR_MODE
-    txStatus = uic (0x01, 0x1560, 0, &txLanes);        // DME_GET PA_ActiveTxDataLanes
-    uint32_t exitStatus = uic (0x18, 0, 0, nullptr);   // DME_HIBERNATE_EXIT
-    for (unsigned settle = 0; settle < 20; settle++) {
-      IODelay (1000);
-    }
+    // The UIC prime already ran above. Report what it found and whether the
+    // first storage command now completes, which is the whole question.
     uint8_t tur5[6] = { 0, 0, 0, 0, 0, 0 };
     UfsResult t5 = command (0, tur5, 6, false, 0);
-    panic ("NATIVE_UFS probe5: UIC hibernate exit\n"
+    panic ("NATIVE_UFS probe5: UIC prime\n"
            "pwr=%08x st=%08x lanes=%08x st=%08x exit=%08x\n"
            "hcs=%08x is=%08x db=%08x rsr=%08x polls=%u\n"
            "ocs=%x resp=%02x scsi=%02x rsp=%08x %08x",
-           pwrMode, pwrStatus, txLanes, txStatus, exitStatus,
+           uicPwr, uicPwrStatus, uicLanes, uicLanesStatus, uicExit,
            read32 (hc, 0x30), read32 (hc, 0x20), read32 (hc, 0x58), read32 (hc, 0x60), gLastPolls,
            t5.ocs, t5.response, t5.scsi,
            getBe32 (virt + ucdOffset + rspOffset), getBe32 (virt + ucdOffset + rspOffset + 4));
@@ -784,6 +785,7 @@ void NativeUfs::adoptAndRead (unsigned level)
   }
   hcsAfter = read32 (hc, 0x30);
   panic ("NATIVE_UFS adopt+read\n"
+         "uic pwr=%08x st=%08x lanes=%08x st=%08x exit=%08x\n"
          "hcs %08x->%08x pwr %08x->%08x ssu=%06x\n"
          "L0 st=%06x last=%08x bs=%08x sns=%06x\n"
          "L1 st=%06x last=%08x bs=%08x sns=%06x\n"
@@ -796,6 +798,7 @@ void NativeUfs::adoptAndRead (unsigned level)
          "rsp0 %08x %08x %08x %08x\n"
          "rsp8 %08x %08x %08x %08x\n"
          "gpt st=%06x sig=%08x %08x",
+         uicPwr, uicPwrStatus, uicLanes, uicLanesStatus, uicExit,
          hcsBefore, hcsAfter, powerBefore, powerAfter, wakeStatus,
          status[0], last[0], blockSize[0], senseOf[0], status[1], last[1], blockSize[1], senseOf[1],
          status[2], last[2], blockSize[2], senseOf[2], status[3], last[3], blockSize[3], senseOf[3],

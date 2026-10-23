@@ -393,29 +393,19 @@ void NativeUfs::adoptAndRead (unsigned level)
   unsigned stopLoops = 10000;
   while ((read32 (hc, 0x60) & 1) && stopLoops--) IODelay (10);
   if (read32 (hc, 0x60) & 1) panic ("NATIVE_UFS adopt: request list did not stop");
-  // EDK2 host-controller initialization order (UfsPassThruHci.c): disable HCE,
-  // then program UTRLBA, then re-enable HCE and only then set UTRLRSR. While HCE
-  // is set the controller keeps the list it already latched, so writing UTRLBA
-  // under a running controller (probe=4) leaves the doorbell unserved: HCE read
-  // back 1, UTRLRSR read back 1, yet OCS stayed at 0xf and the response UPIU
-  // stayed zero. Drop HCE across the base-address write.
-  write32 (hc, 0x34, 0);
-  __asm__ volatile ("dsb sy" ::: "memory");
-  unsigned hceLoops = 10000;
-  while ((read32 (hc, 0x34) & 1) && hceLoops--) IODelay (10);
-  if (read32 (hc, 0x34) & 1) panic ("NATIVE_UFS adopt: HCE did not clear hce=%08x", read32 (hc, 0x34));
+  // Keep HCE set while reprogramming UTRLBA. Hardware 2026-10-23: dropping HCE
+  // and raising it again leaves HCS = 0x8 (UCRDY only, UTRLRDY/UTMRLRDY clear)
+  // and the list never becomes ready again, so the EDK2 cold-init order does not
+  // apply to a warm hand-off. With HCE left alone, probe=3 replaced the list and
+  // read back hcs=0x10f, so the base-address write is honored as it stands.
   smmuBypassStream (0x60, smmuMap, smmuReport, phys, 16384);
   write32 (hc, 0x50, static_cast<uint32_t> (phys));
   write32 (hc, 0x54, static_cast<uint32_t> (phys >> 32));
   write32 (hc, 0x20, 0xffffffffU);  // clear stale status
-  write32 (hc, 0x34, 1);            // host controller enable
-  __asm__ volatile ("dsb sy" ::: "memory");
-  unsigned enableLoops = 10000;
-  while (!(read32 (hc, 0x34) & 1) && enableLoops--) IODelay (10);
-  if (!(read32 (hc, 0x34) & 1)) panic ("NATIVE_UFS adopt: HCE did not set hce=%08x", read32 (hc, 0x34));
   write32 (hc, 0x60, 1);
   if (!waitSet (hc, 0x30, 0x2, 100000)) {
-    panic ("NATIVE_UFS adopt: request list not ready hcs=%08x", read32 (hc, 0x30));
+    panic ("NATIVE_UFS adopt: request list not ready hcs=%08x hce=%08x ba=%08x",
+           read32 (hc, 0x30), read32 (hc, 0x34), read32 (hc, 0x50));
   }
   if (level == 3) {
     panic ("NATIVE_UFS adopt: list replaced\n"
@@ -461,7 +451,8 @@ void NativeUfs::adoptAndRead (unsigned level)
     // doorbell. A stale doorbell bit from a stopped list keeps the slot
     // occupied, so clear it through UTRLCLR first (UFS HCI 5.4.4).
     if (!(read32 (hc, 0x60) & 1)) write32 (hc, 0x60, 1);
-    if (read32 (hc, 0x58) & 1) write32 (hc, 0x5c, ~1U);
+    // UTRLCLR (5.4.4): writing 1 to bit n clears doorbell bit n.
+    if (read32 (hc, 0x58) & 1) write32 (hc, 0x5c, 1);
     write32 (hc, 0x58, 1);          // ring slot 0
     UfsResult result = { 0xf, 0xff, 0xff, 0, 0, 0 };
     bool done = false;

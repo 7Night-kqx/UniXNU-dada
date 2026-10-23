@@ -54,6 +54,7 @@ void boot_progress_poll (void) __attribute__((weak));
 volatile uint32_t native_ufs_probe_calls = 0;
 volatile uint32_t native_ufs_matched = 0;
 volatile uint32_t native_ufs_probe_requested = 0;
+static unsigned gLastPolls = 0;
 volatile uint32_t native_ufs_mapped = 0;
 volatile uint32_t native_ufs_status = 0;
 // Root start: 1 entered, 2 host up, 3 layout found; the last soft-failure reason (a static string), for the boot page.
@@ -455,13 +456,18 @@ void NativeUfs::adoptAndRead (unsigned level)
     write32 (hc, 0x58, 1);          // ring slot 0
     UfsResult result = { 0xf, 0xff, 0xff, 0, 0, 0 };
     bool done = false;
-    for (unsigned loops = 0; loops < 100000; loops++) {
+    unsigned polls = 0;
+    // The device may be in UFS-PowerDown when the first command arrives; waking
+    // it and answering can take far longer than a few milliseconds. Poll for a
+    // wide window instead of declaring a timeout early.
+    for (polls = 0; polls < 2000000; polls++) {
       if (!(read32 (hc, 0x58) & 1)) {
         done = true;
         break;
       }
-      IODelay (1);
+      IODelay (10);
     }
+    gLastPolls = polls;
     cacheCleanInvalidate (virt, 16384);
     if (!done) {
       return result;
@@ -570,16 +576,15 @@ void NativeUfs::adoptAndRead (unsigned level)
     panic ("NATIVE_UFS adopt: TEST UNIT READY lun0\n"
            "ocs=%x resp=%02x scsi=%02x\n"
            "phys=%llx hcs=%08x->%08x smmu idx/bank=%08x cbar=%08x\n"
-           "is=%08x db=%08x rsr=%08x hce=%08x iacr=%08x\n"
+           "is=%08x db=%08x rsr=%08x hce=%08x iacr=%08x polls=%u\n"
            "utrd0=%08x ucd=%08x\n"
            "smmu gfsr=%08x cbfsr=%08x far=%08x%08x cbar=%08x sctlr=%08x\n"
            "uic pa=%08x dl=%08x net=%08x tr=%08x dme=%08x\n"
            "rsp=%08x %08x",
            t.ocs, t.response, t.scsi, phys, hcsBefore, read32 (hc, 0x30), smmuReport[0], smmuReport[1],
            read32 (hc, 0x20), read32 (hc, 0x58), read32 (hc, 0x60), read32 (hc, 0x34),
-           read32 (hc, 0x4c),
-           dw0, static_cast<uint32_t> (phys + ucdOffset),
-           gfsr, cbfsr, farHi, farLo, cbBar, cbSctlr,
+           read32 (hc, 0x4c), gLastPolls,
+           dw0, static_cast<uint32_t> (phys + ucdOffset),           gfsr, cbfsr, farHi, farLo, cbBar, cbSctlr,
            read32 (hc, 0x38), read32 (hc, 0x3c), read32 (hc, 0x40), read32 (hc, 0x44),
            read32 (hc, 0x48),
            getBe32 (rsp0), getBe32 (rsp0 + 4));

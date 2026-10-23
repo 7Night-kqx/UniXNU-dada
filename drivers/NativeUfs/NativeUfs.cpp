@@ -588,6 +588,7 @@ void NativeUfs::adoptAndRead (unsigned level)
            "utrd0=%08x ucd=%08x rb=%08x/%08x\n"
            "smmu gfsr=%08x cbfsr=%08x far=%08x%08x cbar=%08x sctlr=%08x\n"
            "uic pa=%08x dl=%08x net=%08x tr=%08x dme=%08x\n"
+           "cap=%08x mcq=%08x mcqcap=%08x mcqcfg=%08x mcqis=%08x\n"
            "rsp=%08x %08x",
            t.ocs, t.response, t.scsi, phys, hcsBefore, read32 (hc, 0x30), smmuReport[0], smmuReport[1],
            read32 (hc, 0x20), read32 (hc, 0x58), read32 (hc, 0x60), read32 (hc, 0x34),
@@ -595,6 +596,7 @@ void NativeUfs::adoptAndRead (unsigned level)
            dw0, static_cast<uint32_t> (phys + ucdOffset), gLastRb0, gLastRb8,           gfsr, cbfsr, farHi, farLo, cbBar, cbSctlr,
            read32 (hc, 0x38), read32 (hc, 0x3c), read32 (hc, 0x40), read32 (hc, 0x44),
            read32 (hc, 0x48),
+           read32 (hc, 0x00), read32 (hc, 0x0c), read32 (hc, 0x10), read32 (hc, 0x14), read32 (hc, 0x18),
            getBe32 (rsp0), getBe32 (rsp0 + 4));
   }
   uint32_t hcsAfter = 0;

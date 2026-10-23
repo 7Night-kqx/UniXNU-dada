@@ -388,24 +388,21 @@ void NativeUfs::adoptAndRead (unsigned level)
   OSSharedPtr<IOMemoryMap> smmuMap;
   uint32_t smmuReport[3] = { 0, 0, 0 };
   write32 (hc, 0x24, 0);            // mask interrupts
-  write32 (hc, 0x60, 0);            // stop the firmware's request list
-  __asm__ volatile ("dsb sy" ::: "memory");
-  unsigned stopLoops = 10000;
-  while ((read32 (hc, 0x60) & 1) && stopLoops--) IODelay (10);
-  if (read32 (hc, 0x60) & 1) panic ("NATIVE_UFS adopt: request list did not stop");
-  // Keep HCE set while reprogramming UTRLBA. Hardware 2026-10-23: dropping HCE
-  // and raising it again leaves HCS = 0x8 (UCRDY only, UTRLRDY/UTMRLRDY clear)
-  // and the list never becomes ready again, so the EDK2 cold-init order does not
-  // apply to a warm hand-off. With HCE left alone, probe=3 replaced the list and
-  // read back hcs=0x10f, so the base-address write is honored as it stands.
+  // The firmware hands the controller over already running: HCE=1, UTRLRSR=1,
+  // UTRLBA=d4bf7000, doorbell clear (probe=6). A stop/reprogram/start cycle does
+  // not make it service a request afterwards (probe=4: doorbell stuck at 1, OCS
+  // 0xf, empty response UPIU) and the SMMU records no fault for it (gfsr=0; the
+  // stale cbfsr/FAR belong to an earlier firmware stream). Leave the run state
+  // alone and publish the descriptor into the list the controller already owns.
+  // HCE must stay set: dropping and raising it leaves HCS=0x8 (UCRDY only).
   smmuBypassStream (0x60, smmuMap, smmuReport, phys, 16384);
-  write32 (hc, 0x50, static_cast<uint32_t> (phys));
-  write32 (hc, 0x54, static_cast<uint32_t> (phys >> 32));
   write32 (hc, 0x20, 0xffffffffU);  // clear stale status
-  write32 (hc, 0x60, 1);
-  if (!waitSet (hc, 0x30, 0x2, 100000)) {
-    panic ("NATIVE_UFS adopt: request list not ready hcs=%08x hce=%08x ba=%08x",
-           read32 (hc, 0x30), read32 (hc, 0x34), read32 (hc, 0x50));
+  if (!(read32 (hc, 0x60) & 1)) {
+    write32 (hc, 0x60, 1);          // the firmware left it stopped; start it
+    if (!waitSet (hc, 0x30, 0x2, 100000)) {
+      panic ("NATIVE_UFS adopt: request list not ready hcs=%08x hce=%08x ba=%08x",
+             read32 (hc, 0x30), read32 (hc, 0x34), read32 (hc, 0x50));
+    }
   }
   if (level == 3) {
     panic ("NATIVE_UFS adopt: list replaced\n"
@@ -505,6 +502,10 @@ void NativeUfs::adoptAndRead (unsigned level)
     *reinterpret_cast<uint32_t *> (utrd + 28) = (prdtOffset >> 2) << 16;
     cacheClean (virt, 16384);
     write32 (hc, 0x20, 0xffffffffU);
+    // UTRIACR (5.4.7) can hold a non-zero aggregation timeout the firmware left:
+    // with aggregation enabled the controller may hold completions, and a stale
+    // value keeps the doorbell unserviced. Clear it for polled operation.
+    write32 (hc, 0x4c, 0);
     if (!(read32 (hc, 0x60) & 1)) write32 (hc, 0x60, 1);
     if (read32 (hc, 0x58) & 1) write32 (hc, 0x5c, ~1U);
     write32 (hc, 0x58, 1);
@@ -567,14 +568,18 @@ void NativeUfs::adoptAndRead (unsigned level)
     panic ("NATIVE_UFS adopt: TEST UNIT READY lun0\n"
            "ocs=%x resp=%02x scsi=%02x\n"
            "phys=%llx hcs=%08x->%08x smmu idx/bank=%08x cbar=%08x\n"
-           "is=%08x db=%08x rsr=%08x hce=%08x\n"
+           "is=%08x db=%08x rsr=%08x hce=%08x iacr=%08x\n"
            "utrd0=%08x ucd=%08x\n"
            "smmu gfsr=%08x cbfsr=%08x far=%08x%08x cbar=%08x sctlr=%08x\n"
+           "uic pa=%08x dl=%08x net=%08x tr=%08x dme=%08x\n"
            "rsp=%08x %08x",
            t.ocs, t.response, t.scsi, phys, hcsBefore, read32 (hc, 0x30), smmuReport[0], smmuReport[1],
            read32 (hc, 0x20), read32 (hc, 0x58), read32 (hc, 0x60), read32 (hc, 0x34),
+           read32 (hc, 0x4c),
            dw0, static_cast<uint32_t> (phys + ucdOffset),
            gfsr, cbfsr, farHi, farLo, cbBar, cbSctlr,
+           read32 (hc, 0x38), read32 (hc, 0x3c), read32 (hc, 0x40), read32 (hc, 0x44),
+           read32 (hc, 0x48),
            getBe32 (rsp0), getBe32 (rsp0 + 4));
   }
   uint32_t hcsAfter = 0;

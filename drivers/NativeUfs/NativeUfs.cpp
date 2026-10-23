@@ -1747,6 +1747,7 @@ static bool mediaWithUuidExists (const char *uuid, NativeUfsBlock *window)
   OSSafeReleaseNULL (matching);
   return found;
 }
+#endif // NATIVE_VERIFIED_BLOCK
 
 // Ready when any medium's provider chain reaches this window, ignoring the UUID. This is the unsigned
 // publication's readiness test: the UUIDs the verified path matches on come from signed policies, and a
@@ -2073,6 +2074,8 @@ bool NativeUfs::start (IOService *provider)
   }
   return false;
 }
+
+#ifdef NATIVE_UFS_BLOCK_DEVICE
 // Boot the root image's windows as block devices. Soft-fails (logs, publishes nothing).
 bool NativeUfs::startRoot (IOService *provider)
 {

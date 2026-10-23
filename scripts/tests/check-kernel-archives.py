@@ -327,6 +327,68 @@ def check_verified_symbols(device):
             check(not uses,
                   f'{relative}: {name} is declared only under NATIVE_VERIFIED_BLOCK (line {declared_at + 1}) '
                   f'but used outside it: lines {uses}')
+        check_unverified_visibility(source, lines, relative)
+
+
+# Static helpers the plain build must still see. Each is used by the plain path (publishThread's
+# readiness test, the root layout probe) and is not part of the verified policy machinery. A guard placed
+# one line too high makes them vanish from the plain build, and the compiler then reports "use of
+# undeclared identifier" a thousand lines below the mistake -- which is what happened when an
+# `#if NATIVE_VERIFIED_BLOCK` meant to wrap mediaWithUuidExists was closed after publishThread instead.
+# check_verified_symbols only looks for the opposite fault (declared guarded, used unguarded), so it
+# passed while CI failed to compile.
+def verified_only_depth(lines):
+    """For each line, whether it is reachable only when NATIVE_VERIFIED_BLOCK is defined.
+
+    `conditional_depth` counts every #if, including `#ifdef NATIVE_UFS_BLOCK_DEVICE`, which is true in
+    the plain build too, so it cannot answer "would the plain build see this line". This tracks the two
+    macros this port actually switches on: a line is verified-only when the innermost enclosing
+    condition mentioning NATIVE_VERIFIED_BLOCK is a positive test. An `#else` inverts it.
+    """
+    state = []
+    result = []
+    for line in lines:
+        result.append(any(state))
+        stripped = line.strip()
+        if not stripped.startswith('#'):
+            continue
+        word = stripped[1:].strip()
+        if word.startswith(('if', 'ifdef', 'ifndef')):
+            condition = word[2:].strip() if word.startswith('ifdef') or word.startswith('ifndef') else word
+            negated = word.startswith('ifndef') or re.search(r'!\s*defined\s*\(?\s*NATIVE_VERIFIED_BLOCK', condition)
+            mentions = 'NATIVE_VERIFIED_BLOCK' in condition
+            state.append(bool(mentions and not negated))
+        elif word.startswith('else') and state:
+            mentions = 'NATIVE_VERIFIED_BLOCK' in word or state[-1] is not None
+            state[-1] = not state[-1] if mentions else state[-1]
+        elif word.startswith('endif') and state:
+            state.pop()
+    return result
+
+
+PLAIN_BUILD_SYMBOLS = ('publishThread', 'discardPendingWindow', 'captureMissingMedia',
+                       'mediaUnderWindow', 'ufsMediaHasAncestor')
+# mediaWithUuidExists is deliberately verified-only: it matches on UUIDs that only a signed policy
+# provides. The others are the plain publication path and must exist in both builds.
+VERIFIED_ONLY_SYMBOLS = ('mediaWithUuidExists',)
+
+
+def check_unverified_visibility(source, lines, relative):
+    """Symbols the plain NativeUfs build needs must not sit inside a verified-only block."""
+    verified_only = verified_only_depth(lines)
+    for index, line in enumerate(lines):
+        if line[:1].isspace() or line.lstrip().startswith(('//', '*', '#')):
+            continue
+        for name in PLAIN_BUILD_SYMBOLS:
+            if re.search(rf'\b{name}\s*\(', line):
+                check(not verified_only[index],
+                      f'{relative}: {name} is defined at line {index + 1} inside a block only the verified '
+                      f'build compiles, so the plain build would not see it')
+        for name in VERIFIED_ONLY_SYMBOLS:
+            if re.search(rf'\b{name}\s*\(', line):
+                check(verified_only[index],
+                      f'{relative}: {name} is defined at line {index + 1} outside the verified-only block; '
+                      f'the plain build would then carry a UUID matcher it has no policy for')
 
 
 def check_binding_slide(device):

@@ -377,9 +377,11 @@ void NativeUfs::adoptAndRead (unsigned level)
   uint64_t phys = fwList;
   zero32 (virt, 16384);
   cacheClean (virt, 16384);
-  // Layout: [0,4096) request list (slot 0 used), [4096,5120) command + response UPIU +
-  // PRDT, [8192,16384) data.
-  const uint32_t ucdOffset = 4096, rspOffset = 512, prdtOffset = 1024, dataOffset = 8192;
+  // Layout: [0,4096) request list (slot 0 used), [4096,...) command + response UPIU +
+  // PRDT, [8192,16384) data. Offsets follow UfsPassThruHci.c exactly: the controller
+  // computes them as dword offsets from the UCD base (RuO = 32/4, RuL = 56/4,
+  // PrdtO = (32+56)/4), so a larger reservation is not interchangeable with them.
+  const uint32_t ucdOffset = 4096, rspOffset = 32, prdtOffset = 88, dataOffset = 8192;
   uint32_t hcsBefore = read32 (hc, 0x30);
   uint32_t doorbellBefore = read32 (hc, 0x58);
   if (doorbellBefore != 0 || read32 (hc, 0x78) != 0) {
@@ -428,13 +430,13 @@ void NativeUfs::adoptAndRead (unsigned level)
     }
     uint64_t ucdPhys = phys + ucdOffset;
     uint32_t direction = length ? (toHost ? 2U : 1U) : 0U;
-    *reinterpret_cast<uint32_t *> (utrd + 0) = 0x10000000U | (direction << 25);
+    *reinterpret_cast<uint32_t *> (utrd + 0) = 0x11000000U | (direction << 25);
     *reinterpret_cast<uint32_t *> (utrd + 8) = 0x0fU;     // OCS: not completed
     *reinterpret_cast<uint32_t *> (utrd + 16) = static_cast<uint32_t> (ucdPhys & 0xffffff80U);
     *reinterpret_cast<uint32_t *> (utrd + 20) = static_cast<uint32_t> (ucdPhys >> 32);
-    *reinterpret_cast<uint32_t *> (utrd + 24) = (512U >> 2) | ((rspOffset >> 2) << 16);   // response length | offset (dwords)
+    *reinterpret_cast<uint32_t *> (utrd + 24) = 14U | (8U << 16);   // RuL | RuO (dwords)
     uint32_t prdEntries = length ? 1U : 0U;
-    *reinterpret_cast<uint32_t *> (utrd + 28) = prdEntries | ((prdtOffset >> 2) << 16);
+    *reinterpret_cast<uint32_t *> (utrd + 28) = prdEntries | (22U << 16);   // PrdtL | PrdtO
     if (length) {
       uint64_t dataPhys = phys + dataOffset;
       uint8_t *prd = ucd + prdtOffset;
@@ -494,12 +496,12 @@ void NativeUfs::adoptAndRead (unsigned level)
     }
     ucd[3] = 1;                     // task tag
     uint64_t ucdPhys = phys + ucdOffset;
-    *reinterpret_cast<uint32_t *> (utrd + 0) = 0x10000000U;
+    *reinterpret_cast<uint32_t *> (utrd + 0) = 0x11000000U;
     *reinterpret_cast<uint32_t *> (utrd + 8) = 0x0fU;
     *reinterpret_cast<uint32_t *> (utrd + 16) = static_cast<uint32_t> (ucdPhys & 0xffffff80U);
     *reinterpret_cast<uint32_t *> (utrd + 20) = static_cast<uint32_t> (ucdPhys >> 32);
-    *reinterpret_cast<uint32_t *> (utrd + 24) = (512U >> 2) | ((rspOffset >> 2) << 16);
-    *reinterpret_cast<uint32_t *> (utrd + 28) = (prdtOffset >> 2) << 16;
+    *reinterpret_cast<uint32_t *> (utrd + 24) = 14U | (8U << 16);
+    *reinterpret_cast<uint32_t *> (utrd + 28) = 22U << 16;
     cacheClean (virt, 16384);
     write32 (hc, 0x20, 0xffffffffU);
     // UTRIACR (5.4.7) can hold a non-zero aggregation timeout the firmware left:
@@ -507,7 +509,7 @@ void NativeUfs::adoptAndRead (unsigned level)
     // value keeps the doorbell unserviced. Clear it for polled operation.
     write32 (hc, 0x4c, 0);
     if (!(read32 (hc, 0x60) & 1)) write32 (hc, 0x60, 1);
-    if (read32 (hc, 0x58) & 1) write32 (hc, 0x5c, ~1U);
+    if (read32 (hc, 0x58) & 1) write32 (hc, 0x5c, 1);
     write32 (hc, 0x58, 1);
     bool done = false;
     for (unsigned loops = 0; loops < 100000; loops++) {

@@ -421,6 +421,26 @@ def check_binding_slide(device):
     if kernel.is_file():
         check('UNIXNU_PRELINK_SLIDE' in kernel.read_text(),
               'the kernel step hands the board prelink slide to the bindings builder')
+    check_reference_is_bytes(text)
+
+
+def check_reference_is_bytes(text):
+    """The reference object must reach the Mach-O parser as bytes, not as a Path.
+
+    native_prelink.macho() indexes into the image (`at + 32 > len(data)`), so a Path raises
+    "object of type 'PosixPath' has no len()" only once the kernel and every other archive have already
+    been built -- which is exactly how CI failed, at archive 10/10. The kernelcache is read with
+    read_bytes() a few lines below; the reference object was not. Assert the call site passes bytes.
+    """
+    # Look at the call sites only: the definition line is "def reference_vtable(reference):", and a
+    # call is any other line that names the function.
+    calls = [line.strip() for line in text.splitlines()
+             if 'reference_vtable(' in line and not line.strip().startswith('def ')]
+    check(bool(calls), 'build-storage-kext-bindings.py calls reference_vtable')
+    check(all('read_bytes()' in call for call in calls),
+          f'build-storage-kext-bindings.py passes the reference object as bytes: {calls}')
+    check('reference.is_file()' in text,
+          'build-storage-kext-bindings.py checks the reference object exists before reading it')
 
 
 def main():

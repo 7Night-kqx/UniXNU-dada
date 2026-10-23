@@ -388,27 +388,31 @@ void NativeUfs::adoptAndRead (unsigned level)
   OSSharedPtr<IOMemoryMap> smmuMap;
   uint32_t smmuReport[3] = { 0, 0, 0 };
   write32 (hc, 0x24, 0);            // mask interrupts
-  // HCE (0x34 bit0) gates all request processing. The firmware may hand the
-  // controller over with it clear; UTRLRSR can still read back 1 while nothing
-  // is serviced (probe=4: doorbell stuck at 1, OCS never left 0xf, empty
-  // response UPIU). Re-enable it before touching the request list.
-  uint32_t hceBefore = read32 (hc, 0x34);
-  if (!(hceBefore & 1)) {
-    write32 (hc, 0x34, hceBefore | 1);
-    __asm__ volatile ("dsb sy" ::: "memory");
-    unsigned hceLoops = 10000;
-    while (!(read32 (hc, 0x34) & 1) && hceLoops--) IODelay (10);
-    if (!(read32 (hc, 0x34) & 1)) panic ("NATIVE_UFS adopt: HCE did not set hce=%08x", read32 (hc, 0x34));
-  }
   write32 (hc, 0x60, 0);            // stop the firmware's request list
   __asm__ volatile ("dsb sy" ::: "memory");
   unsigned stopLoops = 10000;
   while ((read32 (hc, 0x60) & 1) && stopLoops--) IODelay (10);
   if (read32 (hc, 0x60) & 1) panic ("NATIVE_UFS adopt: request list did not stop");
+  // EDK2 host-controller initialization order (UfsPassThruHci.c): disable HCE,
+  // then program UTRLBA, then re-enable HCE and only then set UTRLRSR. While HCE
+  // is set the controller keeps the list it already latched, so writing UTRLBA
+  // under a running controller (probe=4) leaves the doorbell unserved: HCE read
+  // back 1, UTRLRSR read back 1, yet OCS stayed at 0xf and the response UPIU
+  // stayed zero. Drop HCE across the base-address write.
+  write32 (hc, 0x34, 0);
+  __asm__ volatile ("dsb sy" ::: "memory");
+  unsigned hceLoops = 10000;
+  while ((read32 (hc, 0x34) & 1) && hceLoops--) IODelay (10);
+  if (read32 (hc, 0x34) & 1) panic ("NATIVE_UFS adopt: HCE did not clear hce=%08x", read32 (hc, 0x34));
   smmuBypassStream (0x60, smmuMap, smmuReport, phys, 16384);
   write32 (hc, 0x50, static_cast<uint32_t> (phys));
   write32 (hc, 0x54, static_cast<uint32_t> (phys >> 32));
   write32 (hc, 0x20, 0xffffffffU);  // clear stale status
+  write32 (hc, 0x34, 1);            // host controller enable
+  __asm__ volatile ("dsb sy" ::: "memory");
+  unsigned enableLoops = 10000;
+  while (!(read32 (hc, 0x34) & 1) && enableLoops--) IODelay (10);
+  if (!(read32 (hc, 0x34) & 1)) panic ("NATIVE_UFS adopt: HCE did not set hce=%08x", read32 (hc, 0x34));
   write32 (hc, 0x60, 1);
   if (!waitSet (hc, 0x30, 0x2, 100000)) {
     panic ("NATIVE_UFS adopt: request list not ready hcs=%08x", read32 (hc, 0x30));
@@ -453,6 +457,11 @@ void NativeUfs::adoptAndRead (unsigned level)
     }
     cacheClean (virt, 16384);
     write32 (hc, 0x20, 0xffffffffU);
+    // EDK2 UfsStartExecCmd: make sure the run-stop bit is set before the
+    // doorbell. A stale doorbell bit from a stopped list keeps the slot
+    // occupied, so clear it through UTRLCLR first (UFS HCI 5.4.4).
+    if (!(read32 (hc, 0x60) & 1)) write32 (hc, 0x60, 1);
+    if (read32 (hc, 0x58) & 1) write32 (hc, 0x5c, ~1U);
     write32 (hc, 0x58, 1);          // ring slot 0
     UfsResult result = { 0xf, 0xff, 0xff, 0, 0, 0 };
     bool done = false;
@@ -505,6 +514,8 @@ void NativeUfs::adoptAndRead (unsigned level)
     *reinterpret_cast<uint32_t *> (utrd + 28) = (prdtOffset >> 2) << 16;
     cacheClean (virt, 16384);
     write32 (hc, 0x20, 0xffffffffU);
+    if (!(read32 (hc, 0x60) & 1)) write32 (hc, 0x60, 1);
+    if (read32 (hc, 0x58) & 1) write32 (hc, 0x5c, ~1U);
     write32 (hc, 0x58, 1);
     bool done = false;
     for (unsigned loops = 0; loops < 100000; loops++) {
@@ -545,15 +556,35 @@ void NativeUfs::adoptAndRead (unsigned level)
     UfsResult t = command (0, tur0, 6, false, 0);
     const uint8_t *rsp0 = virt + ucdOffset + rspOffset;
     uint32_t dw0 = *reinterpret_cast<volatile uint32_t *> (virt + 0);
+    // The SMMU is the other half of this failure: if the controller read the
+    // request list but its DMA was rejected, the global fault register (0x48)
+    // and the per-bank FSR/FAR at context bank + 0x58/0x60 say so, while the
+    // doorbell stays set. Read them after the attempt.
+    uintptr_t smmu = smmuMap ? static_cast<uintptr_t> (smmuMap->getVirtualAddress ()) : 0;
+    uint32_t gfsr = 0, cbfsr = 0, farLo = 0, farHi = 0, cbBar = 0, cbSctlr = 0;
+    if (smmu) {
+      unsigned cbBank = (smmuReport[0] >> 16) & 0xffff;
+      unsigned cbPages = 1U << (((read32 (smmu, 0x24) >> 28) & 7) + 1);
+      uintptr_t cb = smmu + (cbPages + cbBank) * 4096;
+      gfsr = read32 (smmu, 0x48);
+      cbfsr = read32 (cb, 0x58);
+      farLo = read32 (cb, 0x60);
+      farHi = read32 (cb, 0x64);
+      cbBar = read32 (smmu, 0x1000 + 4 * cbBank);
+      cbSctlr = read32 (cb, 0x0);
+    }
     panic ("NATIVE_UFS adopt: TEST UNIT READY lun0\n"
            "ocs=%x resp=%02x scsi=%02x\n"
            "phys=%llx hcs=%08x->%08x smmu idx/bank=%08x cbar=%08x\n"
            "is=%08x db=%08x rsr=%08x hce=%08x\n"
            "utrd0=%08x ucd=%08x\n"
+           "smmu gfsr=%08x cbfsr=%08x far=%08x%08x cbar=%08x sctlr=%08x\n"
            "rsp=%08x %08x",
            t.ocs, t.response, t.scsi, phys, hcsBefore, read32 (hc, 0x30), smmuReport[0], smmuReport[1],
            read32 (hc, 0x20), read32 (hc, 0x58), read32 (hc, 0x60), read32 (hc, 0x34),
-           dw0, static_cast<uint32_t> (phys + ucdOffset), getBe32 (rsp0), getBe32 (rsp0 + 4));
+           dw0, static_cast<uint32_t> (phys + ucdOffset),
+           gfsr, cbfsr, farHi, farLo, cbBar, cbSctlr,
+           getBe32 (rsp0), getBe32 (rsp0 + 4));
   }
   uint32_t hcsAfter = 0;
   const unsigned maxLun = 6;

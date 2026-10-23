@@ -1093,6 +1093,21 @@ static bool hostBringUp (const char **why)
     gRootDiagnostic.cba2r = read32 (gHost.smmu, 0x1800 + 4 * (report[0] >> 16));
   }
   if (!hostStartQueue (why)) return false;
+  // Prime the UIC path: the controller won't service UTP transfer list requests until it
+  // completes at least one UIC command after taking over from firmware. Without this, the
+  // doorbell sticks at 1, IS stays zero, and NOP OUT never completes (probe=10/root mode
+  // failed here while probe=9's adopt path succeeded).
+  write32 (gHost.hc, 0x20, 0xffffffffU);
+  if (!waitSet (gHost.hc, 0x30, 0x8, 100000)) { *why = "uic readiness"; return false; }
+  write32 (gHost.hc, 0x94, (0x1571U << 16)); write32 (gHost.hc, 0x98, 0); write32 (gHost.hc, 0x9c, 0);
+  write32 (gHost.hc, 0x90, 0x01);           // DME_GET PA_PWR_MODE
+  if (!waitSet (gHost.hc, 0x20, 0x400, 200000)) { *why = "uic dme_get pwr"; return false; }
+  write32 (gHost.hc, 0x94, (0x1560U << 16)); write32 (gHost.hc, 0x98, 0); write32 (gHost.hc, 0x9c, 0);
+  write32 (gHost.hc, 0x90, 0x01);           // DME_GET PA_ActiveTxDataLanes
+  if (!waitSet (gHost.hc, 0x20, 0x400, 200000)) { *why = "uic dme_get lanes"; return false; }
+  write32 (gHost.hc, 0x90, 0x18);           // DME_HIBERNATE_EXIT
+  if (!waitSet (gHost.hc, 0x20, 0x400, 200000)) { *why = "uic hibernate exit"; return false; }
+  write32 (gHost.hc, 0x20, 0xffffffffU);
   gRootDiagnostic.stage = "NOP OUT";
   // NOP OUT proves the transport before touching the SCSI layer.
   if (hostNop () != kIOReturnSuccess) {

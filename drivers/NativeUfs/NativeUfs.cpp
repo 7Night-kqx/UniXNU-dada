@@ -465,15 +465,15 @@ void NativeUfs::adoptAndRead (unsigned level)
     UfsResult result = { 0xf, 0xff, 0xff, 0, 0, 0 };
     bool done = false;
     unsigned polls = 0;
-    // The device may be in UFS-PowerDown when the first command arrives; waking
-    // it and answering can take far longer than a few milliseconds. Poll for a
-    // wide window instead of declaring a timeout early.
-    for (polls = 0; polls < 2000000; polls++) {
+    // Original window: 100000 iterations of a 1 us delay. Restored after the
+    // wide window proved the device never answers at all, so waiting longer
+    // only delays the failure page.
+    for (polls = 0; polls < 100000; polls++) {
       if (!(read32 (hc, 0x58) & 1)) {
         done = true;
         break;
       }
-      IODelay (10);
+      IODelay (1);
     }
     gLastPolls = polls;
     cacheCleanInvalidate (virt, 16384);
@@ -492,6 +492,27 @@ void NativeUfs::adoptAndRead (unsigned level)
     return result;
   };
 
+  // UIC commands are the one path this driver never exercised. HCS bits[10:8]
+  // hold UPMCRS, and the value here is 1, which is the "link is in Hibernate"
+  // state: the controller latches the doorbell and never completes, with IS
+  // zero and no UIC error, because the UPIU cannot leave the host. DME_GET
+  // reads a MIB attribute and DME_HIBERNATE_EXIT (0x18) brings the link back.
+  auto uic = [&] (uint8_t opcode, uint16_t mib, uint32_t arg3, uint32_t *out) -> uint32_t {
+    write32 (hc, 0x20, 0xffffffffU);          // clear UCCS and any stale status
+    if (!waitSet (hc, 0x30, 0x8, 100000)) {   // HCS.UCRDY must be set before UICCMD
+      return 0xfffffffe;
+    }
+    write32 (hc, 0x94, (uint32_t (mib) << 16));
+    write32 (hc, 0x98, 0);
+    write32 (hc, 0x9c, arg3);
+    write32 (hc, 0x90, opcode);
+    if (!waitSet (hc, 0x20, 0x400, 200000)) { // IS.UCCS
+      return 0xfffffffd;
+    }
+    uint32_t arg2 = read32 (hc, 0x98);
+    if (out) *out = read32 (hc, 0x9c);
+    return arg2 & 0xff;                       // 0 is success
+  };
   // NOP OUT (kind 0) and Query read requests (kind 1: opcode 0x05 READ FLAG, 0x03 READ ATTRIBUTE).
   // Read-only: no data segment, no state change on the device. Returns the UPIU response byte and
   // the 32-bit value field (attributes) or flag byte via *value; ocs 0xf means no completion.
@@ -548,7 +569,31 @@ void NativeUfs::adoptAndRead (unsigned level)
   // (ufshcd_set_dev_pwr_mode); no user data is touched.
   uint32_t powerBefore = 0, powerAfter = 0, queryResp = 0, ignoredValue = 0;
   uint32_t wakeStatus = 0xee;
-  if (level == 5 || level == 9) {
+  if (level == 5) {
+    // The doorbell sticks with IS zero, no UIC error and a clean SMMU, while
+    // HCS.UPMCRS reads 1. That is the link sitting in Hibernate: the controller
+    // never gets the UPIU out, so the request never completes and nothing is
+    // ever reported. Prove it with DME_GET on PA_PWR_MODE (0x1571), leave
+    // Hibernate with DME_HIBERNATE_EXIT (0x18), then retry the same TUR.
+    uint32_t pwrMode = 0, pwrStatus = 0, txLanes = 0, txStatus = 0;
+    pwrStatus = uic (0x01, 0x1571, 0, &pwrMode);       // DME_GET PA_PWR_MODE
+    txStatus = uic (0x01, 0x1560, 0, &txLanes);        // DME_GET PA_ActiveTxDataLanes
+    uint32_t exitStatus = uic (0x18, 0, 0, nullptr);   // DME_HIBERNATE_EXIT
+    for (unsigned settle = 0; settle < 20; settle++) {
+      IODelay (1000);
+    }
+    uint8_t tur5[6] = { 0, 0, 0, 0, 0, 0 };
+    UfsResult t5 = command (0, tur5, 6, false, 0);
+    panic ("NATIVE_UFS probe5: UIC hibernate exit\n"
+           "pwr=%08x st=%08x lanes=%08x st=%08x exit=%08x\n"
+           "hcs=%08x is=%08x db=%08x rsr=%08x polls=%u\n"
+           "ocs=%x resp=%02x scsi=%02x rsp=%08x %08x",
+           pwrMode, pwrStatus, txLanes, txStatus, exitStatus,
+           read32 (hc, 0x30), read32 (hc, 0x20), read32 (hc, 0x58), read32 (hc, 0x60), gLastPolls,
+           t5.ocs, t5.response, t5.scsi,
+           getBe32 (virt + ucdOffset + rspOffset), getBe32 (virt + ucdOffset + rspOffset + 4));
+  }
+  if (level == 9) {
     query (1, 0x03, 0x02, &powerBefore, &queryResp);     // READ ATTRIBUTE bCurrentPowerMode
     uint8_t ssu[6] = { 0x1b, 0, 0, 0, 0x10, 0 };          // START STOP UNIT, power condition ACTIVE
     UfsResult w = command (0xd0, ssu, 6, false, 0);
@@ -560,18 +605,13 @@ void NativeUfs::adoptAndRead (unsigned level)
     (void) ignoredValue;
   }
   if (level == 4) {
-    // REG_UFS_MEM_CFG (0x300) bit0 is MCQ_MODE_SELECT. If it is set the host is
-    // submitting through the MCQ rings and the legacy UTRLBA/UTRLDBR path is
-    // latched but never serviced -- which is exactly the failure we see: the
-    // doorbell bit sticks, IS stays zero, no UIC or SMMU error, and the UTRD we
-    // wrote is valid. Clear the bit (the device is unaffected: MCQ is internal
-    // to the host controller) and retry the same legacy command.
-    uint32_t memCfgBefore = read32 (hc, 0x300);
+    // REG_UFS_MEM_CFG (0x300) bit0 is MCQ_MODE_SELECT. Probe 8 measured it as
+    // zero, so the firmware left this controller on the legacy UTRL path and
+    // MCQ is not the reason the doorbell sticks. Report it so a future firmware
+    // that flips the mode is visible immediately, and read MCQCAP at 0x04 for
+    // the queue count and config block offset.
+    uint32_t memCfg = read32 (hc, 0x300);
     uint32_t mcqCap = read32 (hc, 0x04);
-    if (memCfgBefore & 1) {
-      write32 (hc, 0x300, memCfgBefore & ~1U);
-      __asm__ volatile ("dsb sy" ::: "memory");
-    }
     uint8_t tur0[6] = { 0, 0, 0, 0, 0, 0 };
     UfsResult t = command (0, tur0, 6, false, 0);
     const uint8_t *rsp0 = virt + ucdOffset + rspOffset;
@@ -596,18 +636,14 @@ void NativeUfs::adoptAndRead (unsigned level)
     // The real MCQ switch is REG_UFS_MEM_CFG (0x300) bit0, not 0x10: the values
     // dumped in probe 7 at 0x0c/0x10/0x14 were EXT_CONTROLLER_CAPABILITIES and
     // the controller PID/MID, which say nothing about the submission mode.
-    // MCQCAP at 0x04 reports the queue count and where the queue config block
-    // lives; if MCQ_MODE_SELECT is set the legacy UTRLDBR is latched and never
-    // serviced, which is exactly what the doorbell does here.
-    uint32_t memCfg = read32 (hc, 0x300);
+    // Probe 8 measured the bit as zero, so the legacy path is the live one.
     static char mcq[900];
     int used = snprintf (mcq, sizeof (mcq),
-                         "memcfg=%08x->%08x sel=%u mcqcap=%08x qcfg=%08x maxq=%u\n",
-                         memCfgBefore, memCfg, memCfg & 1, mcqCap,
+                         "memcfg=%08x sel=%u mcqcap=%08x qcfg=%08x maxq=%u\n",
+                         memCfg, memCfg & 1, mcqCap,
                          ((mcqCap >> 16) & 0xff) * 0x200, (mcqCap & 0xff) + 1);
     // The queue config block sits at QCFGPTR*0x200 (0x1C000 on this part), well
-    // outside the 0x3000 window we map. Record the config pointers and the
-    // operation pointers the firmware left, if the window happens to reach them.
+    // outside the 0x3000 window we map, so record what the low window shows.
     for (unsigned off = 0x300; off < 0x320 && used < 800; off += 4) {
       used += snprintf (mcq + used, sizeof (mcq) - used, "%03x=%08x ", off, read32 (hc, off));
     }

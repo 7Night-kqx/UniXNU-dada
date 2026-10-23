@@ -403,7 +403,7 @@ void NativeUfs::adoptAndRead (unsigned level)
   write32 (hc, 0x20, 0xffffffffU);  // clear stale status
   if (!(read32 (hc, 0x60) & 1)) {
     write32 (hc, 0x60, 1);          // the firmware left it stopped; start it
-    if (!waitSet (hc, 0x30, 0x2, 100000)) {
+    if (!NativeUfs::waitSet (hc, 0x30, 0x2, 100000)) {
       panic ("NATIVE_UFS adopt: request list not ready hcs=%08x hce=%08x ba=%08x",
              read32 (hc, 0x30), read32 (hc, 0x34), read32 (hc, 0x50));
     }
@@ -499,14 +499,14 @@ void NativeUfs::adoptAndRead (unsigned level)
   // reads a MIB attribute and DME_HIBERNATE_EXIT (0x18) brings the link back.
   auto uic = [&] (uint8_t opcode, uint16_t mib, uint32_t arg3, uint32_t *out) -> uint32_t {
     write32 (hc, 0x20, 0xffffffffU);          // clear UCCS and any stale status
-    if (!waitSet (hc, 0x30, 0x8, 100000)) {   // HCS.UCRDY must be set before UICCMD
+    if (!NativeUfs::waitSet (hc, 0x30, 0x8, 100000)) {   // HCS.UCRDY must be set before UICCMD
       return 0xfffffffe;
     }
     write32 (hc, 0x94, (uint32_t (mib) << 16));
     write32 (hc, 0x98, 0);
     write32 (hc, 0x9c, arg3);
     write32 (hc, 0x90, opcode);
-    if (!waitSet (hc, 0x20, 0x400, 200000)) { // IS.UCCS
+    if (!NativeUfs::waitSet (hc, 0x20, 0x400, 200000)) { // IS.UCCS
       return 0xfffffffd;
     }
     uint32_t arg2 = read32 (hc, 0x98);
@@ -1098,15 +1098,15 @@ static bool hostBringUp (const char **why)
   // doorbell sticks at 1, IS stays zero, and NOP OUT never completes (probe=10/root mode
   // failed here while probe=9's adopt path succeeded).
   write32 (gHost.hc, 0x20, 0xffffffffU);
-  if (!waitSet (gHost.hc, 0x30, 0x8, 100000)) { *why = "uic readiness"; return false; }
+  if (!NativeUfs::waitSet (gHost.hc, 0x30, 0x8, 100000)) { *why = "uic readiness"; return false; }
   write32 (gHost.hc, 0x94, (0x1571U << 16)); write32 (gHost.hc, 0x98, 0); write32 (gHost.hc, 0x9c, 0);
   write32 (gHost.hc, 0x90, 0x01);           // DME_GET PA_PWR_MODE
-  if (!waitSet (gHost.hc, 0x20, 0x400, 200000)) { *why = "uic dme_get pwr"; return false; }
+  if (!NativeUfs::waitSet (gHost.hc, 0x20, 0x400, 200000)) { *why = "uic dme_get pwr"; return false; }
   write32 (gHost.hc, 0x94, (0x1560U << 16)); write32 (gHost.hc, 0x98, 0); write32 (gHost.hc, 0x9c, 0);
   write32 (gHost.hc, 0x90, 0x01);           // DME_GET PA_ActiveTxDataLanes
-  if (!waitSet (gHost.hc, 0x20, 0x400, 200000)) { *why = "uic dme_get lanes"; return false; }
+  if (!NativeUfs::waitSet (gHost.hc, 0x20, 0x400, 200000)) { *why = "uic dme_get lanes"; return false; }
   write32 (gHost.hc, 0x90, 0x18);           // DME_HIBERNATE_EXIT
-  if (!waitSet (gHost.hc, 0x20, 0x400, 200000)) { *why = "uic hibernate exit"; return false; }
+  if (!NativeUfs::waitSet (gHost.hc, 0x20, 0x400, 200000)) { *why = "uic hibernate exit"; return false; }
   write32 (gHost.hc, 0x20, 0xffffffffU);
   gRootDiagnostic.stage = "NOP OUT";
   // NOP OUT proves the transport before touching the SCSI layer.

@@ -80,8 +80,8 @@ class NativeUfs : public IOService {
   void inspectSmmu (void);
   void inspectContextBanks (void);
   bool startRoot (IOService *provider);
-  static bool waitSet (uintptr_t base, unsigned offset, uint32_t mask, unsigned loops);
 public:
+  static bool waitSet (uintptr_t base, unsigned offset, uint32_t mask, unsigned loops);
   IOService *probe (IOService *provider, SInt32 *score) override;
   bool start (IOService *provider) override;
   void stop (IOService *provider) override;

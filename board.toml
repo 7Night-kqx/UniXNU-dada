@@ -220,6 +220,7 @@ kernel_args = [
   # build, so startRoot() publishes on window readiness alone -- see the validate()/wait() branches
   # in drivers/NativeUfs/NativeUfs.cpp.
   "native-ufs-root=1",
+  "native-ufs-diagnostics=1",
   "-no_slto_panic",
   "ml-timeout-lock-panic-scale=40",
 ]

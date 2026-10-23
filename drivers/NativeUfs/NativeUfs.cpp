@@ -560,6 +560,18 @@ void NativeUfs::adoptAndRead (unsigned level)
     (void) ignoredValue;
   }
   if (level == 4) {
+    // REG_UFS_MEM_CFG (0x300) bit0 is MCQ_MODE_SELECT. If it is set the host is
+    // submitting through the MCQ rings and the legacy UTRLBA/UTRLDBR path is
+    // latched but never serviced -- which is exactly the failure we see: the
+    // doorbell bit sticks, IS stays zero, no UIC or SMMU error, and the UTRD we
+    // wrote is valid. Clear the bit (the device is unaffected: MCQ is internal
+    // to the host controller) and retry the same legacy command.
+    uint32_t memCfgBefore = read32 (hc, 0x300);
+    uint32_t mcqCap = read32 (hc, 0x04);
+    if (memCfgBefore & 1) {
+      write32 (hc, 0x300, memCfgBefore & ~1U);
+      __asm__ volatile ("dsb sy" ::: "memory");
+    }
     uint8_t tur0[6] = { 0, 0, 0, 0, 0, 0 };
     UfsResult t = command (0, tur0, 6, false, 0);
     const uint8_t *rsp0 = virt + ucdOffset + rspOffset;
@@ -581,6 +593,24 @@ void NativeUfs::adoptAndRead (unsigned level)
       cbBar = read32 (smmu, 0x1000 + 4 * cbBank);
       cbSctlr = read32 (cb, 0x0);
     }
+    // The real MCQ switch is REG_UFS_MEM_CFG (0x300) bit0, not 0x10: the values
+    // dumped in probe 7 at 0x0c/0x10/0x14 were EXT_CONTROLLER_CAPABILITIES and
+    // the controller PID/MID, which say nothing about the submission mode.
+    // MCQCAP at 0x04 reports the queue count and where the queue config block
+    // lives; if MCQ_MODE_SELECT is set the legacy UTRLDBR is latched and never
+    // serviced, which is exactly what the doorbell does here.
+    uint32_t memCfg = read32 (hc, 0x300);
+    static char mcq[900];
+    int used = snprintf (mcq, sizeof (mcq),
+                         "memcfg=%08x->%08x sel=%u mcqcap=%08x qcfg=%08x maxq=%u\n",
+                         memCfgBefore, memCfg, memCfg & 1, mcqCap,
+                         ((mcqCap >> 16) & 0xff) * 0x200, (mcqCap & 0xff) + 1);
+    // The queue config block sits at QCFGPTR*0x200 (0x1C000 on this part), well
+    // outside the 0x3000 window we map. Record the config pointers and the
+    // operation pointers the firmware left, if the window happens to reach them.
+    for (unsigned off = 0x300; off < 0x320 && used < 800; off += 4) {
+      used += snprintf (mcq + used, sizeof (mcq) - used, "%03x=%08x ", off, read32 (hc, off));
+    }
     panic ("NATIVE_UFS adopt: TEST UNIT READY lun0\n"
            "ocs=%x resp=%02x scsi=%02x\n"
            "phys=%llx hcs=%08x->%08x smmu idx/bank=%08x cbar=%08x\n"
@@ -588,16 +618,17 @@ void NativeUfs::adoptAndRead (unsigned level)
            "utrd0=%08x ucd=%08x rb=%08x/%08x\n"
            "smmu gfsr=%08x cbfsr=%08x far=%08x%08x cbar=%08x sctlr=%08x\n"
            "uic pa=%08x dl=%08x net=%08x tr=%08x dme=%08x\n"
-           "cap=%08x mcq=%08x mcqcap=%08x mcqcfg=%08x mcqis=%08x\n"
-           "rsp=%08x %08x",
+           "cap=%08x\n"
+           "rsp=%08x %08x\n"
+           "%s",
            t.ocs, t.response, t.scsi, phys, hcsBefore, read32 (hc, 0x30), smmuReport[0], smmuReport[1],
            read32 (hc, 0x20), read32 (hc, 0x58), read32 (hc, 0x60), read32 (hc, 0x34),
            read32 (hc, 0x4c), gLastPolls,
            dw0, static_cast<uint32_t> (phys + ucdOffset), gLastRb0, gLastRb8,           gfsr, cbfsr, farHi, farLo, cbBar, cbSctlr,
            read32 (hc, 0x38), read32 (hc, 0x3c), read32 (hc, 0x40), read32 (hc, 0x44),
            read32 (hc, 0x48),
-           read32 (hc, 0x00), read32 (hc, 0x0c), read32 (hc, 0x10), read32 (hc, 0x14), read32 (hc, 0x18),
-           getBe32 (rsp0), getBe32 (rsp0 + 4));
+           read32 (hc, 0x00),
+           getBe32 (rsp0), getBe32 (rsp0 + 4), mcq);
   }
   uint32_t hcsAfter = 0;
   const unsigned maxLun = 6;
